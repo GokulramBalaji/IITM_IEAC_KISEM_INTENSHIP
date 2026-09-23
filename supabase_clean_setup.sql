@@ -2833,3 +2833,23 @@ INSERT INTO public.holidays (id, name, date, type, year, is_optional, descriptio
 ('HOL-2026-06', 'Diwali', '2026-11-08', 'Festival', 2026, FALSE, 'Deepavali Festival of Lights', 'active'),
 ('HOL-2026-07', 'Christmas Day', '2026-12-25', 'Public', 2026, FALSE, 'Christmas Celebration', 'active')
 ON CONFLICT (id) DO NOTHING;
+
+
+-- ============================================================
+-- 9. ENSURE ROW LEVEL SECURITY (RLS) IS DISABLED FOR ALL TABLES
+-- (Required for application role-based access control via API/Client)
+-- ============================================================
+ALTER TABLE IF EXISTS public.utilities DISABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS public.vendors DISABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS public.products DISABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS public.users DISABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS public.inventory DISABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS public.purchase_orders DISABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS public.audit_logs DISABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS public.employees DISABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS public.tasks DISABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS public.leave_types DISABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS public.leave_balances DISABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS public.leave_requests DISABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS public.attendance DISABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS public.holidays DISABLE ROW LEVEL SECURITY;
