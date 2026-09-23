@@ -1,0 +1,48 @@
+# ==============================================================================
+# IIT Madras IEAC - Production .gitignore
+# ==============================================================================
+
+# Dependencies
+node_modules/
+frontend/node_modules/
+
+# Production build outputs
+frontend/dist/
+dist/
+
+# Environment and sensitive keys
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+*.crt
+
+# System, Logs & Runtime
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+lerna-debug.log*
+.system_generated/
+scratch/
+
+# Temporary and export artifacts
+*.xlsx
+public/booking-*.xlsx
+public/booking-bulk-*.xlsx
+public/booking-extract-*.xlsx
+~$*.docx
+
+# OS and Editor configurations
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
