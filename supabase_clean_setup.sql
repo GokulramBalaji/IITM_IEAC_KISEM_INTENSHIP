@@ -2682,3 +2682,154 @@ INSERT INTO public.products (id,vendor_id,name,description,category,brand,produc
 -- ============================================================
 
 
+
+
+-- ============================================================
+-- 8. HR WORKFORCE, TASKS & LEAVE MANAGEMENT MODULE
+-- ============================================================
+
+-- EMPLOYEES
+CREATE TABLE IF NOT EXISTS public.employees (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  email TEXT NOT NULL UNIQUE,
+  phone TEXT,
+  role TEXT NOT NULL DEFAULT 'intern',
+  department TEXT DEFAULT 'Audit',
+  designation TEXT,
+  date_of_joining DATE DEFAULT CURRENT_DATE,
+  status TEXT NOT NULL DEFAULT 'active',
+  reporting_manager_id TEXT,
+  address TEXT,
+  emergency_contact TEXT,
+  created_at TIMESTAMPTZ DEFAULT now() NOT NULL,
+  updated_at TIMESTAMPTZ DEFAULT now() NOT NULL
+);
+
+-- TASKS
+CREATE TABLE IF NOT EXISTS public.tasks (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  description TEXT,
+  assigned_to TEXT NOT NULL,
+  assigned_by TEXT NOT NULL,
+  department TEXT DEFAULT 'Audit',
+  priority TEXT NOT NULL DEFAULT 'Medium',
+  status TEXT NOT NULL DEFAULT 'pending',
+  due_date TIMESTAMPTZ,
+  estimated_hours NUMERIC DEFAULT 0,
+  actual_hours NUMERIC DEFAULT 0,
+  completed_at TIMESTAMPTZ,
+  remarks TEXT,
+  history JSONB DEFAULT '[]'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT now() NOT NULL,
+  updated_at TIMESTAMPTZ DEFAULT now() NOT NULL
+);
+
+-- LEAVE TYPES
+CREATE TABLE IF NOT EXISTS public.leave_types (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  code TEXT NOT NULL UNIQUE,
+  default_days INTEGER NOT NULL DEFAULT 12,
+  requires_proof BOOLEAN DEFAULT FALSE,
+  is_paid BOOLEAN DEFAULT TRUE,
+  carry_forward BOOLEAN DEFAULT FALSE,
+  status TEXT NOT NULL DEFAULT 'active',
+  created_at TIMESTAMPTZ DEFAULT now() NOT NULL
+);
+
+-- LEAVE BALANCES
+CREATE TABLE IF NOT EXISTS public.leave_balances (
+  id TEXT PRIMARY KEY,
+  employee_id TEXT NOT NULL,
+  leave_type_id TEXT NOT NULL,
+  year INTEGER NOT NULL DEFAULT EXTRACT(YEAR FROM CURRENT_DATE),
+  total_days NUMERIC NOT NULL DEFAULT 12,
+  used_days NUMERIC NOT NULL DEFAULT 0,
+  pending_days NUMERIC NOT NULL DEFAULT 0,
+  remaining_days NUMERIC NOT NULL DEFAULT 12,
+  created_at TIMESTAMPTZ DEFAULT now() NOT NULL,
+  UNIQUE(employee_id, leave_type_id, year)
+);
+
+-- LEAVE REQUESTS
+CREATE TABLE IF NOT EXISTS public.leave_requests (
+  id TEXT PRIMARY KEY,
+  employee_id TEXT NOT NULL,
+  leave_type_id TEXT NOT NULL,
+  start_date DATE NOT NULL,
+  end_date DATE NOT NULL,
+  days NUMERIC NOT NULL DEFAULT 1,
+  reason TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  applied_at TIMESTAMPTZ DEFAULT now() NOT NULL,
+  approved_by TEXT,
+  approved_at TIMESTAMPTZ,
+  remarks TEXT,
+  is_revoked BOOLEAN DEFAULT FALSE,
+  revoke_reason TEXT,
+  cancellation_reason TEXT
+);
+
+-- ATTENDANCE RECORDS
+CREATE TABLE IF NOT EXISTS public.attendance (
+  id TEXT PRIMARY KEY,
+  employee_id TEXT NOT NULL,
+  date DATE NOT NULL,
+  status TEXT NOT NULL DEFAULT 'Present',
+  check_in TIMESTAMPTZ,
+  check_out TIMESTAMPTZ,
+  work_location TEXT DEFAULT 'Office',
+  is_late BOOLEAN DEFAULT FALSE,
+  is_early_exit BOOLEAN DEFAULT FALSE,
+  regularized BOOLEAN DEFAULT FALSE,
+  regularize_reason TEXT,
+  approved_by TEXT,
+  remarks TEXT,
+  created_at TIMESTAMPTZ DEFAULT now() NOT NULL,
+  updated_at TIMESTAMPTZ DEFAULT now() NOT NULL,
+  UNIQUE(employee_id, date)
+);
+
+-- HOLIDAYS
+CREATE TABLE IF NOT EXISTS public.holidays (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  date DATE NOT NULL UNIQUE,
+  type TEXT DEFAULT 'National',
+  year INTEGER NOT NULL DEFAULT EXTRACT(YEAR FROM CURRENT_DATE),
+  is_optional BOOLEAN DEFAULT FALSE,
+  description TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  created_at TIMESTAMPTZ DEFAULT now() NOT NULL
+);
+
+-- INDEXES FOR HR & TASKS
+CREATE INDEX IF NOT EXISTS idx_employees_role ON public.employees(role);
+CREATE INDEX IF NOT EXISTS idx_tasks_assigned_to ON public.tasks(assigned_to);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON public.tasks(status);
+CREATE INDEX IF NOT EXISTS idx_leave_requests_employee ON public.leave_requests(employee_id);
+CREATE INDEX IF NOT EXISTS idx_leave_requests_status ON public.leave_requests(status);
+CREATE INDEX IF NOT EXISTS idx_attendance_emp_date ON public.attendance(employee_id, date);
+CREATE INDEX IF NOT EXISTS idx_holidays_date ON public.holidays(date);
+
+-- SEED: DEFAULT LEAVE TYPES
+INSERT INTO public.leave_types (id, name, code, default_days, requires_proof, is_paid, carry_forward, status) VALUES
+('LT-CL', 'Casual Leave', 'CL', 12, FALSE, TRUE, FALSE, 'active'),
+('LT-SL', 'Sick Leave', 'SL', 10, TRUE, TRUE, FALSE, 'active'),
+('LT-EL', 'Earned / Privilege Leave', 'EL', 15, FALSE, TRUE, TRUE, 'active'),
+('LT-OD', 'On-Duty (Client / Field Visit)', 'OD', 15, FALSE, TRUE, FALSE, 'active'),
+('LT-LOP', 'Loss of Pay', 'LOP', 0, FALSE, FALSE, FALSE, 'active')
+ON CONFLICT (id) DO NOTHING;
+
+-- SEED: 2026 OFFICIAL HOLIDAYS
+INSERT INTO public.holidays (id, name, date, type, year, is_optional, description, status) VALUES
+('HOL-2026-01', 'Republic Day', '2026-01-26', 'National', 2026, FALSE, 'National Holiday', 'active'),
+('HOL-2026-02', 'Pongal / Makar Sankranti', '2026-01-14', 'Regional', 2026, FALSE, 'Tamil Harvest Festival', 'active'),
+('HOL-2026-03', 'May Day', '2026-05-01', 'Public', 2026, FALSE, 'International Labour Day', 'active'),
+('HOL-2026-04', 'Independence Day', '2026-08-15', 'National', 2026, FALSE, 'National Holiday', 'active'),
+('HOL-2026-05', 'Gandhi Jayanti', '2026-10-02', 'National', 2026, FALSE, 'National Holiday', 'active'),
+('HOL-2026-06', 'Diwali', '2026-11-08', 'Festival', 2026, FALSE, 'Deepavali Festival of Lights', 'active'),
+('HOL-2026-07', 'Christmas Day', '2026-12-25', 'Public', 2026, FALSE, 'Christmas Celebration', 'active')
+ON CONFLICT (id) DO NOTHING;
