@@ -1434,6 +1434,174 @@ window.fetch = async function (url, options = {}) {
       });
     }
 
+    // --- 9. TASKS MODULE ---
+    if (path === '/api/tasks') {
+      if (method === 'GET') {
+        const { data, error } = await supabase.from('tasks').select('*').order('created_at', { ascending: false });
+        if (error) return errorResponse(error.message);
+        return jsonResponse(snakeToCamel(data || []));
+      }
+      if (method === 'POST') {
+        const taskData = {
+          id: 'TSK-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+          title: body.title || 'Untitled Task',
+          description: body.description || '',
+          assigned_to: body.assignedTo || body.assigned_to || user?.id || 'admin',
+          assigned_by: user?.id || 'admin',
+          department: body.department || 'Audit',
+          priority: body.priority || 'Medium',
+          status: body.status || 'pending',
+          due_date: body.dueDate || body.due_date || new Date().toISOString(),
+          estimated_hours: Number(body.estimatedHours || 0),
+          actual_hours: Number(body.actualHours || 0),
+          remarks: body.remarks || '',
+          history: JSON.stringify([{ action: 'Created task', timestamp: new Date().toISOString(), user: user?.name || 'Staff' }])
+        };
+        const { data, error } = await supabase.from('tasks').insert(taskData).select().single();
+        if (error) return errorResponse(error.message);
+        return jsonResponse(snakeToCamel(data));
+      }
+    }
+    if (path.startsWith('/api/tasks/')) {
+      const taskId = path.replace('/api/tasks/', '').split('/')[0];
+      if (method === 'PUT') {
+        const updateData = {};
+        if (body.title !== undefined) updateData.title = body.title;
+        if (body.description !== undefined) updateData.description = body.description;
+        if (body.status !== undefined) updateData.status = body.status;
+        if (body.priority !== undefined) updateData.priority = body.priority;
+        if (body.dueDate !== undefined) updateData.due_date = body.dueDate;
+        if (body.actualHours !== undefined) updateData.actual_hours = Number(body.actualHours);
+        if (body.completedAt !== undefined) updateData.completed_at = body.completedAt;
+        const { data, error } = await supabase.from('tasks').update(updateData).eq('id', taskId).select().single();
+        if (error) return errorResponse(error.message);
+        return jsonResponse(snakeToCamel(data));
+      }
+      if (method === 'DELETE') {
+        const { error } = await supabase.from('tasks').delete().eq('id', taskId);
+        if (error) return errorResponse(error.message);
+        return jsonResponse({ ok: true });
+      }
+    }
+
+    // --- 10. LEAVES & HOLIDAYS MODULE ---
+    if (path === '/api/leave-types') {
+      const { data, error } = await supabase.from('leave_types').select('*').order('name');
+      if (error) return errorResponse(error.message);
+      return jsonResponse(snakeToCamel(data || []));
+    }
+
+    if (path === '/api/holidays') {
+      if (method === 'GET') {
+        const { data, error } = await supabase.from('holidays').select('*').order('date');
+        if (error) return errorResponse(error.message);
+        return jsonResponse(snakeToCamel(data || []));
+      }
+      if (method === 'POST') {
+        const hol = {
+          id: 'HOL-' + Math.random().toString(36).substring(2, 8).toUpperCase(),
+          name: body.name,
+          date: body.date,
+          type: body.type || 'National',
+          year: new Date(body.date).getFullYear(),
+          is_optional: Boolean(body.isOptional),
+          description: body.description || '',
+          status: 'active'
+        };
+        const { data, error } = await supabase.from('holidays').insert(hol).select().single();
+        if (error) return errorResponse(error.message);
+        return jsonResponse(snakeToCamel(data));
+      }
+    }
+    if (path.startsWith('/api/holidays/') && method === 'DELETE') {
+      const hId = path.replace('/api/holidays/', '');
+      const { error } = await supabase.from('holidays').delete().eq('id', hId);
+      if (error) return errorResponse(error.message);
+      return jsonResponse({ ok: true });
+    }
+
+    if (path === '/api/leave-requests') {
+      if (method === 'GET') {
+        const { data, error } = await supabase.from('leave_requests').select('*').order('applied_at', { ascending: false });
+        if (error) return errorResponse(error.message);
+        return jsonResponse(snakeToCamel(data || []));
+      }
+      if (method === 'POST') {
+        const lr = {
+          id: 'LR-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
+          employee_id: body.employeeId || body.employee_id || user?.id || 'emp-1',
+          leave_type_id: body.leaveTypeId || body.leave_type_id || 'LT-CL',
+          start_date: body.startDate || body.start_date,
+          end_date: body.endDate || body.end_date,
+          days: Number(body.days || 1),
+          reason: body.reason || '',
+          status: 'pending'
+        };
+        const { data, error } = await supabase.from('leave_requests').insert(lr).select().single();
+        if (error) return errorResponse(error.message);
+        return jsonResponse(snakeToCamel(data));
+      }
+    }
+
+    if (path.startsWith('/api/leave-requests/')) {
+      const sub = path.replace('/api/leave-requests/', '');
+      const [lrId, action] = sub.split('/');
+      if (action === 'approve') {
+        const { data, error } = await supabase.from('leave_requests').update({ status: 'approved', approved_by: user?.name || 'HR Admin', approved_at: new Date().toISOString() }).eq('id', lrId).select().single();
+        if (error) return errorResponse(error.message);
+        return jsonResponse(snakeToCamel(data));
+      }
+      if (action === 'reject') {
+        const { data, error } = await supabase.from('leave_requests').update({ status: 'rejected', approved_by: user?.name || 'HR Admin', approved_at: new Date().toISOString(), remarks: body.remarks || 'Rejected' }).eq('id', lrId).select().single();
+        if (error) return errorResponse(error.message);
+        return jsonResponse(snakeToCamel(data));
+      }
+      if (action === 'cancel') {
+        const { data, error } = await supabase.from('leave_requests').update({ status: 'cancelled' }).eq('id', lrId).select().single();
+        if (error) return errorResponse(error.message);
+        return jsonResponse(snakeToCamel(data));
+      }
+    }
+
+    // --- 11. ATTENDANCE & AVAILABILITY MODULE ---
+    if (path === '/api/attendance') {
+      if (method === 'GET') {
+        const { data, error } = await supabase.from('attendance').select('*').order('date', { ascending: false });
+        if (error) return errorResponse(error.message);
+        return jsonResponse(snakeToCamel(data || []));
+      }
+      if (method === 'POST') {
+        const attId = 'ATT-' + (body.employeeId || user?.id) + '-' + (body.date || new Date().toISOString().split('T')[0]);
+        const att = {
+          id: attId,
+          employee_id: body.employeeId || body.employee_id || user?.id || 'emp-1',
+          date: body.date || new Date().toISOString().split('T')[0],
+          status: body.status || 'Present',
+          check_in: body.checkIn || new Date().toISOString(),
+          work_location: body.workLocation || 'Office',
+          remarks: body.remarks || ''
+        };
+        const { data, error } = await supabase.from('attendance').upsert(att).select().single();
+        if (error) return errorResponse(error.message);
+        return jsonResponse(snakeToCamel(data));
+      }
+    }
+
+    if (path === '/api/availability') {
+      const targetDate = query.date || new Date().toISOString().split('T')[0];
+      const { data: users } = await supabase.from('users').select('*');
+      const { data: leaves } = await supabase.from('leave_requests').select('*').eq('status', 'approved');
+      const onLeaveEmpIds = (leaves || []).filter(l => l.start_date <= targetDate && l.end_date >= targetDate).map(l => l.employee_id);
+      const availableStaff = (users || []).filter(u => !onLeaveEmpIds.includes(u.id));
+      return jsonResponse({
+        date: targetDate,
+        total: (users || []).length,
+        availableCount: availableStaff.length,
+        onLeaveCount: onLeaveEmpIds.length,
+        available: snakeToCamel(availableStaff)
+      });
+    }
+
     if (path.startsWith('/download/')) {
       const filename = path.replace('/download/', '');
 
