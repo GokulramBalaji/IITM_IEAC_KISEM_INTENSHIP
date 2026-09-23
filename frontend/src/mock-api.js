@@ -1,6 +1,5 @@
 // Client-Side Simulated API Layer for Netlify Serverless Deployment backed by Supabase
 import ExcelJS from 'exceljs';
-import bcrypt from 'bcryptjs';
 import { supabase, adminAuthClient } from './lib/supabase';
 
 // Helper to convert DB snake_case to frontend camelCase
