@@ -586,37 +586,23 @@ app.post('/api/book', authenticateToken, async (req, res) => {
   const user = users.find(u => String(u.id) === String(userId));
   if (!user) return res.status(404).json({ error: 'User not found' });
 
-  // Pre-booking logic: find maximum due date from all active/future bookings
-  const bookings = await db.getBookings();
-  const activeAndFuture = bookings.filter(b => 
-    String(b.instrumentId) === String(instrumentId) && 
-    !b.returnedDate && 
-    b.status !== 'denied'
-  );
+  if (inst.status !== 'available') {
+    return res.status(400).json({ error: 'This instrument is already booked.' });
+  }
 
   let start, due;
-  const isPreBooking = activeAndFuture.length > 0;
-
   if (explicitStart && explicitEnd) {
-    // User-chosen date range (pre-booking with calendar)
     start = new Date(explicitStart);
     due = new Date(explicitEnd);
-  } else if (isPreBooking) {
-    // Pre-booking logic: find maximum due date from all active/future bookings
-    let maxDue = new Date();
-    activeAndFuture.forEach(b => {
-      const d = new Date(b.dueDate);
-      if (d > maxDue) {
-        maxDue = d;
-      }
-    });
-    // Start after the maximum due date (plus 1 second to avoid sub-second overlap issues)
-    start = new Date(maxDue.getTime() + 1000);
-    due = new Date(start.getTime() + days * 24 * 3600 * 1000);
   } else {
-    // Standard duration booking (starting now)
     start = new Date();
     due = new Date(start.getTime() + days * 24 * 3600 * 1000);
+  }
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  if (start < today) {
+    return res.status(400).json({ error: 'Cannot book instrument for past dates.' });
   }
 
   // Validate: end must be after start
@@ -742,12 +728,21 @@ app.post('/api/book/bulk', authenticateToken, async (req, res) => {
     due = new Date(start.getTime() + days * 24 * 3600 * 1000);
   }
 
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  if (start < today) {
+    return res.status(400).json({ error: 'Cannot book instruments for past dates.' });
+  }
+
   if (due <= start) return res.status(400).json({ error: 'End date must be after start date.' });
 
-  // Validate that no instrument has an overlapping booking/request
+  // Validate that no instrument is already booked or has an overlapping booking/request
   for (const instrumentId of instrumentIds) {
     const inst = await db.getInstrumentById(instrumentId);
     if (!inst) continue;
+    if (inst.status !== 'available') {
+      return res.status(400).json({ error: `Instrument "${inst.name}" is already booked.` });
+    }
 
     const activeAndFuture = bookings.filter(b => 
       String(b.instrumentId) === String(instrumentId) && 

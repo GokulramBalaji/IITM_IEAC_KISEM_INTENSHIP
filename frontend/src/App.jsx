@@ -495,12 +495,12 @@ export default function App() {
       )}
 
       {/* Sidebar navigation */}
-      <aside className={`fixed inset-y-0 left-0 z-50 w-64 border-r bg-card flex flex-col justify-between shrink-0 transition-transform duration-300 ease-in-out lg:static lg:translate-x-0 ${
+      <aside className={`fixed inset-y-0 left-0 z-50 w-64 border-r bg-card flex flex-col h-full shrink-0 transition-transform duration-300 ease-in-out lg:static lg:translate-x-0 ${
         mobileMenuOpen ? "translate-x-0" : "-translate-x-full lg:flex"
       }`}>
-        <div>
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
           {/* Brand header */}
-          <div className="h-16 flex items-center justify-between px-4 border-b bg-muted/20 gap-2">
+          <div className="h-16 flex items-center justify-between px-4 border-b bg-muted/20 gap-2 shrink-0">
             <div className="flex items-center gap-1.5 shrink-0">
               <img src="https://lh3.googleusercontent.com/d/1Y1tT7mrE-ntA-cY5xpewNdIp3sGXxO6F" alt="IITM Logo" className="h-8 w-auto object-contain bg-white rounded p-0.5" />
               <img src="https://lh3.googleusercontent.com/d/1_h0FAF9gosStf26KKGPOqPBdGozZdPCr" alt="IEAC Logo" className="h-8 w-auto object-contain bg-white rounded p-0.5" />
@@ -512,7 +512,7 @@ export default function App() {
           </div>
 
           {/* Navigation Links */}
-          <nav className="p-4 space-y-0.5 overflow-y-auto">
+          <nav className="flex-1 min-h-0 overflow-y-auto p-4 space-y-0.5">
             {navItems.map(item => {
               // Section dividers
               if (item.isDivider) {
@@ -549,7 +549,7 @@ export default function App() {
         </div>
 
         {/* Sidebar Footer */}
-        <div className="p-4 border-t space-y-3 bg-muted/10">
+        <div className="p-4 border-t space-y-3 bg-muted/10 shrink-0">
           {/* Connection status */}
           <div className="flex items-center justify-between text-xs text-muted-foreground">
             <span className="flex items-center gap-1.5 font-medium">

@@ -794,6 +794,13 @@ window.fetch = async function (url, options = {}) {
       const fileName = `booking-${id}-${Date.now()}.xlsx`;
       const sheetUrl = `/download/` + fileName;
 
+      // Verify instrument is currently available
+      const { data: targetInst } = await supabase.from('inventory').select('*').eq('id', instrumentId).single();
+      if (!targetInst) return errorResponse('Instrument not found.', 404);
+      if (targetInst.status !== 'available') {
+        return errorResponse('This instrument is already booked.');
+      }
+
       let finalStart, finalDue;
       const inputStart = startDate || body.startDate;
       const inputDue = dueDate || endDate || body.endDate || body.dueDate;
@@ -806,6 +813,15 @@ window.fetch = async function (url, options = {}) {
         const now = new Date();
         finalStart = now.toISOString();
         finalDue = new Date(now.getTime() + durationDays * 24 * 3600 * 1000).toISOString();
+      }
+
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      if (new Date(finalStart) < today) {
+        return errorResponse('Cannot book instrument for past dates.');
+      }
+      if (new Date(finalDue) < new Date(finalStart)) {
+        return errorResponse('End date must be on or after start date.');
       }
 
       const payload = {
@@ -839,6 +855,13 @@ window.fetch = async function (url, options = {}) {
       const fileName = `booking-bulk-${bulkGroupId}-${Date.now()}.xlsx`;
       const sheetUrl = `/download/` + fileName;
 
+      // Verify all selected instruments are available
+      const { data: targetInsts } = await supabase.from('inventory').select('*').in('id', instrumentIds);
+      const unavailable = (targetInsts || []).filter(i => i.status !== 'available');
+      if (unavailable.length > 0) {
+        return errorResponse('One or more selected instruments are already booked.');
+      }
+
       let finalStart, finalDue;
       const inputStart = startDate || body.startDate;
       const inputDue = dueDate || endDate || body.endDate || body.dueDate;
@@ -851,6 +874,15 @@ window.fetch = async function (url, options = {}) {
         const now = new Date();
         finalStart = now.toISOString();
         finalDue = new Date(now.getTime() + durationDays * 24 * 3600 * 1000).toISOString();
+      }
+
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      if (new Date(finalStart) < today) {
+        return errorResponse('Cannot book instruments for past dates.');
+      }
+      if (new Date(finalDue) < new Date(finalStart)) {
+        return errorResponse('End date must be on or after start date.');
       }
 
       const bookingRows = instrumentIds.map(instId => ({
