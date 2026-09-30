@@ -227,12 +227,12 @@ export default function LoginView({ onLoginSuccess }) {
           {!isStandalone && !isInstalled && (
             <div className="w-full bg-muted/40 hover:bg-muted/60 border rounded-xl p-2.5 transition-all flex items-center justify-between gap-3 text-left">
               <div className="flex items-center gap-2.5 min-w-0">
-                <div className="w-8 h-8 rounded-lg bg-primary/10 border border-primary/20 text-primary flex items-center justify-center shrink-0">
-                  <Smartphone className="w-4 h-4" />
+                <div className="w-8 h-8 rounded-lg bg-white border border-border flex items-center justify-center shrink-0 overflow-hidden shadow-xs p-0.5">
+                  <img src="/icons/icon-192.png" alt="IEAC Logo" className="w-full h-full object-contain" />
                 </div>
                 <div className="min-w-0">
-                  <p className="text-xs font-bold text-foreground leading-tight">Install Web App</p>
-                  <p className="text-[10px] text-muted-foreground leading-tight">1-click standalone desktop / mobile app</p>
+                  <p className="text-xs font-bold text-foreground leading-tight">Install IITM IEAC App</p>
+                  <p className="text-[10px] text-muted-foreground leading-tight">Fast standalone desktop &amp; mobile app</p>
                 </div>
               </div>
 

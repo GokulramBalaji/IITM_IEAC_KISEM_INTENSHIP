@@ -1,5 +1,5 @@
 // IITM IEAC Progressive Web App Service Worker
-const CACHE_NAME = 'iitm-ieac-v1';
+const CACHE_NAME = 'iitm-ieac-v2';
 const PRECACHE_ASSETS = [
   '/',
   '/index.html',
