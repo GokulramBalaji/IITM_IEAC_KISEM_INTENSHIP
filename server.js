@@ -158,7 +158,13 @@ app.use('/api/', apiRateLimiter);
 
 app.use(express.static(path.join(__dirname, 'frontend/dist'), {
   maxAge: '1d',
-  etag: true
+  etag: true,
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('sw.js') || filePath.endsWith('manifest.json')) {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Service-Worker-Allowed', '/');
+    }
+  }
 }));
 app.use(express.static(path.join(__dirname, 'public'), {
   maxAge: '1d',

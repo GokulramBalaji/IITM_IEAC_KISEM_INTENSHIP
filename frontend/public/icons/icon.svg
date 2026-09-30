@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e3a8a" />
+      <stop offset="50%" stop-color="#1d4ed8" />
+      <stop offset="100%" stop-color="#2563eb" />
+    </linearGradient>
+    <linearGradient id="goldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fef08a" />
+      <stop offset="50%" stop-color="#facc15" />
+      <stop offset="100%" stop-color="#ca8a04" />
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.35" />
+    </filter>
+  </defs>
+
+  <!-- Background rounded squircle -->
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="url(#bgGrad)" filter="url(#shadow)" />
+
+  <!-- Outer Emblem Ring -->
+  <circle cx="256" cy="220" r="130" fill="none" stroke="url(#goldGrad)" stroke-width="12" opacity="0.95" />
+  <circle cx="256" cy="220" r="115" fill="none" stroke="#ffffff" stroke-width="3" opacity="0.4" />
+
+  <!-- Central Gear / Core Symbol -->
+  <path d="M256 130 L266 160 L296 160 L272 180 L282 210 L256 192 L230 210 L240 180 L216 160 L246 160 Z" fill="url(#goldGrad)" />
+  <circle cx="256" cy="220" r="45" fill="#ffffff" />
+  <circle cx="256" cy="220" r="30" fill="#1e3a8a" />
+  <circle cx="256" cy="220" r="14" fill="url(#goldGrad)" />
+
+  <!-- Orbiting Nodes -->
+  <circle cx="256" cy="90" r="12" fill="#ffffff" />
+  <circle cx="386" cy="220" r="12" fill="#ffffff" />
+  <circle cx="256" cy="350" r="12" fill="#ffffff" />
+  <circle cx="126" cy="220" r="12" fill="#ffffff" />
+
+  <!-- Stylized Branding Text -->
+  <text x="256" y="405" font-family="system-ui, -apple-system, sans-serif" font-size="44" font-weight="900" fill="#ffffff" text-anchor="middle" letter-spacing="4">
+    IITM IEAC
+  </text>
+  <text x="256" y="445" font-family="system-ui, -apple-system, sans-serif" font-size="20" font-weight="600" fill="#93c5fd" text-anchor="middle" letter-spacing="3">
+    ASSET &amp; WORKFORCE
+  </text>
+</svg>
