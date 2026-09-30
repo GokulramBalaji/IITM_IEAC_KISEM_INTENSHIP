@@ -33,6 +33,64 @@ const safeDateString = (dateVal, fallback = 'N/A') => {
   return isNaN(d.getTime()) ? fallback : d.toLocaleDateString();
 };
 
+const getLocalDateString = (d = new Date()) => {
+  const dt = (d instanceof Date && !isNaN(d.getTime())) ? d : new Date(d);
+  if (isNaN(dt.getTime())) return new Date().toISOString().slice(0, 10);
+  const year = dt.getFullYear();
+  const month = String(dt.getMonth() + 1).padStart(2, '0');
+  const day = String(dt.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+async function reconcileMockOverdueCheckouts(targetUserId = null) {
+  try {
+    const today = getLocalDateString();
+    let query = supabase.from('attendance').select('*').lt('date', today);
+    if (targetUserId) {
+      query = query.eq('employee_id', targetUserId);
+    }
+    const { data: list, error } = await query;
+    if (error || !Array.isArray(list) || list.length === 0) return;
+
+    for (const r of list) {
+      const hasIn = Boolean(r.check_in || r.checkIn);
+      const hasOut = Boolean(r.check_out || r.checkOut);
+      if (hasIn && !hasOut && r.date && r.date < today) {
+        const [yr, mo, dy] = r.date.split('-').map(Number);
+        const localEndOfDay = new Date(yr, mo - 1, dy, 23, 59, 59);
+        const autoOutIso = !isNaN(localEndOfDay.getTime()) ? localEndOfDay.toISOString() : `${r.date}T23:59:59.000Z`;
+
+        const inTime = new Date(r.check_in || r.checkIn).getTime();
+        const outTime = new Date(autoOutIso).getTime();
+        let diffHours = 8;
+        if (!isNaN(inTime) && !isNaN(outTime) && outTime > inTime) {
+          diffHours = Math.max(0, Math.round(((outTime - inTime) / 3600000) * 10) / 10);
+        }
+
+        const existingRemarks = r.remarks || '';
+        const autoRemark = existingRemarks.includes('Auto check-out') || existingRemarks.includes('Auto checked out')
+          ? existingRemarks
+          : (existingRemarks ? `${existingRemarks} | Auto check-out at 00:00 rollover` : 'Auto check-out at 00:00 rollover');
+
+        const updatePayload = {
+          check_out: autoOutIso,
+          status: 'present',
+          remarks: autoRemark,
+          updated_at: new Date().toISOString()
+        };
+
+        if (r.id) {
+          await supabase.from('attendance').update(updatePayload).eq('id', r.id);
+        } else {
+          await supabase.from('attendance').update(updatePayload).eq('employee_id', r.employee_id).eq('date', r.date);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Error reconciling mock overdue checkouts:', err);
+  }
+}
+
 // Spreadsheet generation for booking details
 async function generateBookingExcel(targetBookings, instrumentsList, usersList, isBulk) {
   const workbook = new ExcelJS.Workbook();
@@ -2028,9 +2086,12 @@ window.fetch = async function (url, options = {}) {
 
     // 11.1 Today's attendance for the logged-in user
     if (path === '/api/attendance/today' && method === 'GET') {
-      const today = new Date().toISOString().slice(0, 10);
+      const today = getLocalDateString();
       const targetUserId = user?.id;
       if (!targetUserId) return jsonResponse(null);
+
+      // Auto-finalize any past unclosed check-in for this user
+      await reconcileMockOverdueCheckouts(targetUserId);
 
       const { data, error } = await supabase.from('attendance')
         .select('*')
@@ -2048,14 +2109,18 @@ window.fetch = async function (url, options = {}) {
     // 11.2 Check-in for logged-in user
     if (path === '/api/attendance/checkin' && method === 'POST') {
       if (!user) return errorResponse('Authentication required.', 401);
-      const today = new Date().toISOString().slice(0, 10);
+      const today = body.date || getLocalDateString();
+
+      // Ensure any previous unclosed check-in is auto checked-out before fresh check-in
+      await reconcileMockOverdueCheckouts(user.id);
+
       const { data: existing } = await supabase.from('attendance')
         .select('*')
         .eq('employee_id', user.id)
         .eq('date', today)
         .maybeSingle();
 
-      if (existing && existing.check_in) {
+      if (existing && (existing.check_in || existing.checkIn)) {
         return errorResponse('Already checked in today.', 400);
       }
 
@@ -2067,6 +2132,7 @@ window.fetch = async function (url, options = {}) {
         date: today,
         status: 'present',
         check_in: now,
+        check_out: null,
         work_location: body.workLocation || 'Office',
         remarks: body.remarks || 'Web portal check-in',
         updated_at: now
@@ -2083,7 +2149,11 @@ window.fetch = async function (url, options = {}) {
     // 11.3 Check-out for logged-in user
     if (path === '/api/attendance/checkout' && method === 'POST') {
       if (!user) return errorResponse('Authentication required.', 401);
-      const today = new Date().toISOString().slice(0, 10);
+      const today = body.date || getLocalDateString();
+
+      // First reconcile any previous days' unclosed records
+      await reconcileMockOverdueCheckouts(user.id);
+
       const { data: existing } = await supabase.from('attendance')
         .select('*')
         .eq('employee_id', user.id)
@@ -2174,7 +2244,7 @@ window.fetch = async function (url, options = {}) {
     // 11.5 Active Leave Attendance Reason Submission
     if (path === '/api/attendance/leave-present-reason' && method === 'POST') {
       if (!user) return errorResponse('Authentication required.', 401);
-      const { reason, date = new Date().toISOString().slice(0, 10) } = body;
+      const { reason, date = getLocalDateString() } = body;
       if (!reason || !reason.trim()) {
         return errorResponse('Reason for attending today is required.', 400);
       }
@@ -2223,6 +2293,7 @@ window.fetch = async function (url, options = {}) {
     // 11.6 Attendance List / All records
     if (path === '/api/attendance') {
       if (method === 'GET') {
+        await reconcileMockOverdueCheckouts();
         const { data: attList, error: attErr } = await supabase.from('attendance').select('*').order('date', { ascending: false });
         if (attErr) return errorResponse(attErr.message);
         const { data: usersList } = await supabase.from('users').select('*');
@@ -2231,7 +2302,7 @@ window.fetch = async function (url, options = {}) {
       }
       if (method === 'POST') {
         const targetUserId = body.userId || body.employeeId || user?.id || 'emp-1';
-        const targetDate = body.date || new Date().toISOString().split('T')[0];
+        const targetDate = body.date || getLocalDateString();
         const attId = 'ATT-' + targetUserId + '-' + targetDate;
         const now = new Date().toISOString();
         const payload = {
@@ -2258,7 +2329,8 @@ window.fetch = async function (url, options = {}) {
       if (role !== 'admin' && role !== 'hr' && role !== 'manager') {
         return errorResponse('Access denied. HR or Admin role required.', 403);
       }
-      const targetDate = query.date || new Date().toISOString().slice(0, 10);
+      await reconcileMockOverdueCheckouts();
+      const targetDate = query.date || getLocalDateString();
       const { data: usersList } = await supabase.from('users').select('*');
       const { data: attList } = await supabase.from('attendance').select('*').eq('date', targetDate);
       const { data: leavesList } = await supabase.from('leave_requests').select('*');
@@ -2503,7 +2575,7 @@ window.fetch = async function (url, options = {}) {
       const tasks = snakeToCamel(tasksRaw || []);
       const attendance = (attRaw || []).map(a => formatAttendanceRecord(a, usersRaw || []));
 
-      const today = new Date().toISOString().slice(0, 10);
+      const today = getLocalDateString();
       const now = new Date();
 
       let pStart, pEnd;

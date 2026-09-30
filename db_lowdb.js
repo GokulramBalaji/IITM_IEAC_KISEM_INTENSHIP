@@ -821,12 +821,61 @@ async function deleteHoliday(id) {
 }
 
 // ─── ATTENDANCE ───────────────────────────────────────────────────────────────
-async function getAttendance() { return db.data.attendance || []; }
+function getLocalDateString(d = new Date()) {
+  const dt = (d instanceof Date && !isNaN(d.getTime())) ? d : new Date(d);
+  if (isNaN(dt.getTime())) return new Date().toISOString().slice(0, 10);
+  const year = dt.getFullYear();
+  const month = String(dt.getMonth() + 1).padStart(2, '0');
+  const day = String(dt.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+async function reconcileOverdueAttendance() {
+  const today = getLocalDateString();
+  const records = db.data.attendance || [];
+  let updatedAny = false;
+  for (const r of records) {
+    if (r.date && r.date < today && r.checkIn && !r.checkOut) {
+      const [yr, mo, dy] = r.date.split('-').map(Number);
+      const localEndOfDay = new Date(yr, mo - 1, dy, 23, 59, 59);
+      const autoOutIso = !isNaN(localEndOfDay.getTime()) ? localEndOfDay.toISOString() : `${r.date}T23:59:59.000Z`;
+
+      const inTime = new Date(r.checkIn).getTime();
+      const outTime = new Date(autoOutIso).getTime();
+      let diffHours = 8;
+      if (!isNaN(inTime) && !isNaN(outTime) && outTime > inTime) {
+        diffHours = Math.max(0, Math.round(((outTime - inTime) / 3600000) * 10) / 10);
+      }
+
+      const existingRemarks = r.remarks || '';
+      const autoRemark = existingRemarks.includes('Auto check-out') || existingRemarks.includes('Auto checked out')
+        ? existingRemarks
+        : (existingRemarks ? `${existingRemarks} | Auto check-out at 00:00 rollover` : 'Auto check-out at 00:00 rollover');
+
+      r.checkOut = autoOutIso;
+      r.workingHours = diffHours;
+      r.status = 'present';
+      r.remarks = autoRemark;
+      updatedAny = true;
+    }
+  }
+  if (updatedAny) {
+    await db.write();
+  }
+  return updatedAny;
+}
+
+async function getAttendance() {
+  await reconcileOverdueAttendance();
+  return db.data.attendance || [];
+}
 async function getTodayAttendance(userId) {
-  const today = new Date().toISOString().slice(0, 10);
+  await reconcileOverdueAttendance();
+  const today = getLocalDateString();
   return (db.data.attendance || []).find(a => String(a.userId) === String(userId) && a.date === today);
 }
 async function getAttendanceByEmployee(userId) {
+  await reconcileOverdueAttendance();
   return (db.data.attendance || []).filter(a => String(a.userId) === String(userId));
 }
 async function upsertAttendance(userId, date, fields) {
@@ -931,6 +980,7 @@ module.exports = {
   getLeaveApprovalsByRequest, insertLeaveApproval,
   getHolidays, getHolidayById, insertHoliday, updateHoliday, deleteHoliday,
   getAttendance, getTodayAttendance, getAttendanceByEmployee, upsertAttendance,
+  reconcileOverdueAttendance, getLocalDateString,
   getNotifications, getNotificationsByUser, insertNotification, markNotificationRead, markAllNotificationsRead,
   getAuditLogs, insertAuditLog,
   getHrSettings, updateHrSettings

@@ -41,11 +41,20 @@ function formatTime(ts) {
   }
 }
 
+function getLocalDateString(d = new Date()) {
+  const dt = (d instanceof Date && !isNaN(d.getTime())) ? d : new Date(d);
+  if (isNaN(dt.getTime())) return new Date().toISOString().slice(0, 10);
+  const year = dt.getFullYear();
+  const month = String(dt.getMonth() + 1).padStart(2, '0');
+  const day = String(dt.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 export default function DailyReportView({ currentUser }) {
   const role = (currentUser?.role || "").toLowerCase()
   const isHR = role === "admin" || role === "hr" || role === "manager"
 
-  const todayStr = new Date().toISOString().slice(0, 10)
+  const todayStr = getLocalDateString()
   const [selectedDate, setSelectedDate] = useState(todayStr)
   const [loading, setLoading] = useState(true)
   const [exporting, setExporting] = useState(false)

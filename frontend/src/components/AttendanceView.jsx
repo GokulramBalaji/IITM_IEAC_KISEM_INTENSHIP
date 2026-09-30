@@ -31,6 +31,15 @@ function formatDate(d) {
   }
 }
 
+function getLocalDateString(d = new Date()) {
+  const dt = (d instanceof Date && !isNaN(d.getTime())) ? d : new Date(d);
+  if (isNaN(dt.getTime())) return new Date().toISOString().slice(0, 10);
+  const year = dt.getFullYear();
+  const month = String(dt.getMonth() + 1).padStart(2, '0');
+  const day = String(dt.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 export default function AttendanceView({ currentUser }) {
   const role = (currentUser?.role || "").toLowerCase()
   const isHR = role === "admin" || role === "hr" || role === "manager"
@@ -43,11 +52,12 @@ export default function AttendanceView({ currentUser }) {
   const [loading, setLoading] = useState(true)
   const [acting, setActing] = useState(false)
   const [tick, setTick] = useState(new Date())
+  const lastDateRef = React.useRef(getLocalDateString())
 
   // HR Workforce Management States
   const [allUsers, setAllUsers] = useState([])
   const [allAttendance, setAllAttendance] = useState([])
-  const [selectedManageDate, setSelectedManageDate] = useState(new Date().toISOString().slice(0, 10))
+  const [selectedManageDate, setSelectedManageDate] = useState(getLocalDateString())
   const [searchEmployee, setSearchEmployee] = useState("")
   const [statusFilter, setStatusFilter] = useState("all")
 
@@ -60,10 +70,22 @@ export default function AttendanceView({ currentUser }) {
   const [targetCheckOut, setTargetCheckOut] = useState("18:00")
   const [submittingMark, setSubmittingMark] = useState(false)
 
+  // Live clock and midnight (00:00) rollover detection
   useEffect(() => {
-    const iv = setInterval(() => setTick(new Date()), 1000)
+    const iv = setInterval(() => {
+      const now = new Date()
+      setTick(now)
+      const currentDay = getLocalDateString(now)
+      if (lastDateRef.current && currentDay !== lastDateRef.current) {
+        // Date changed (midnight 00:00 rollover)!
+        lastDateRef.current = currentDay
+        setSelectedManageDate(currentDay)
+        loadSelf()
+        if (isHR) loadHRData()
+      }
+    }, 1000)
     return () => clearInterval(iv)
-  }, [])
+  }, [isHR])
 
   const loadSelf = async () => {
     setLoading(true)
@@ -71,7 +93,14 @@ export default function AttendanceView({ currentUser }) {
       const [tr, hr] = await Promise.all([fetch("/api/attendance/today"), fetch("/api/attendance")])
       if (tr.ok) {
         const t = await tr.json()
-        setToday(t)
+        const currentTodayStr = getLocalDateString()
+        if (t && t.date === currentTodayStr) {
+          setToday(t)
+        } else {
+          setToday(null)
+        }
+      } else {
+        setToday(null)
       }
       if (hr.ok) {
         const all = await hr.json()
@@ -114,7 +143,8 @@ export default function AttendanceView({ currentUser }) {
     try {
       const res = await fetch("/api/attendance/checkin", {
         method: "POST",
-        headers: { "Content-Type": "application/json" }
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date: getLocalDateString() })
       })
       if (res.ok) {
         await loadSelf()
@@ -139,7 +169,8 @@ export default function AttendanceView({ currentUser }) {
 
       const res = await fetch("/api/attendance/checkout", {
         method: "POST",
-        headers
+        headers,
+        body: JSON.stringify({ date: getLocalDateString() })
       })
       if (res.ok) {
         await loadSelf()
@@ -262,8 +293,12 @@ export default function AttendanceView({ currentUser }) {
     }
   }
 
-  const elapsedHours = today?.checkIn && !today?.checkOut
-    ? ((new Date() - new Date(today.checkIn)) / 3600000).toFixed(2)
+  const todayStr = getLocalDateString(tick)
+  const isTodayRecord = today && today.date === todayStr
+  const currentToday = isTodayRecord ? today : null
+
+  const elapsedHours = currentToday?.checkIn && !currentToday?.checkOut
+    ? ((tick.getTime() - new Date(currentToday.checkIn).getTime()) / 3600000).toFixed(2)
     : null
 
   const weekHistory = history.slice(0, 5)
@@ -367,34 +402,34 @@ export default function AttendanceView({ currentUser }) {
                   <p className="text-sm text-muted-foreground mt-1">{tick.toLocaleDateString([], { weekday: "long", year: "numeric", month: "long", day: "numeric" })}</p>
                 </div>
                 <div className="flex flex-col items-center gap-4">
-                  {today?.checkIn && (
+                  {currentToday?.checkIn && (
                     <div className="grid grid-cols-3 gap-4 text-center">
                       <div>
                         <p className="text-[10px] text-muted-foreground font-medium uppercase">Check In</p>
-                        <p className="text-lg font-bold text-green-600">{formatTime(today.checkIn)}</p>
+                        <p className="text-lg font-bold text-green-600">{formatTime(currentToday.checkIn)}</p>
                       </div>
                       <div>
                         <p className="text-[10px] text-muted-foreground font-medium uppercase">Duration</p>
-                        <p className="text-lg font-bold text-primary">{elapsedHours ? `${elapsedHours}h` : `${today.workingHours}h`}</p>
+                        <p className="text-lg font-bold text-primary">{elapsedHours ? `${elapsedHours}h` : `${currentToday.workingHours}h`}</p>
                       </div>
                       <div>
                         <p className="text-[10px] text-muted-foreground font-medium uppercase">Check Out</p>
-                        <p className="text-lg font-bold text-muted-foreground">{formatTime(today.checkOut)}</p>
+                        <p className="text-lg font-bold text-muted-foreground">{formatTime(currentToday.checkOut)}</p>
                       </div>
                     </div>
                   )}
                   <div className="flex gap-3">
-                    {!today?.checkIn ? (
+                    {!currentToday?.checkIn ? (
                       <Button onClick={checkIn} disabled={acting} size="lg" className="gap-2 bg-green-600 hover:bg-green-700 text-white font-semibold">
                         <LogIn className="w-4 h-4" />Check In
                       </Button>
-                    ) : !today?.checkOut ? (
+                    ) : !currentToday?.checkOut ? (
                       <Button onClick={checkOut} disabled={acting} size="lg" variant="outline" className="gap-2 border-red-500 text-red-600 hover:bg-red-50 font-semibold">
                         <LogOut className="w-4 h-4" />Check Out
                       </Button>
                     ) : (
                       <div className="flex items-center gap-2 text-green-600 font-semibold text-sm">
-                        <CheckCircle2 className="w-5 h-5" />Day Completed ({today.workingHours} hrs)
+                        <CheckCircle2 className="w-5 h-5" />Day Completed ({currentToday.workingHours} hrs)
                       </div>
                     )}
                   </div>
@@ -408,7 +443,7 @@ export default function AttendanceView({ currentUser }) {
             {[
               { label: "This Week Total", value: `${totalHoursThisWeek}h`, sub: "Logged hours" },
               { label: "Daily Average", value: `${avgHours}h`, sub: "Last 5 workdays" },
-              { label: "Status Today", value: today?.checkIn ? (today.checkOut ? "Completed" : "Checked In") : "Not Checked In", sub: today?.date || "Today" },
+              { label: "Status Today", value: currentToday?.checkIn ? (currentToday.checkOut ? "Completed" : "Checked In") : "Not Checked In", sub: todayStr },
               { label: "Attendance Rate", value: `${Math.min(100, Math.round((weekHistory.filter(h => (h.status || '').toLowerCase() === 'present').length / 5) * 100))}%`, sub: "Last 5 days" }
             ].map(({ label, value, sub }) => (
               <Card key={label}>

@@ -61,6 +61,15 @@ import {
 // Connect to socket.io
 const socket = io()
 
+function getLocalDateString(d = new Date()) {
+  const dt = (d instanceof Date && !isNaN(d.getTime())) ? d : new Date(d);
+  if (isNaN(dt.getTime())) return new Date().toISOString().slice(0, 10);
+  const year = dt.getFullYear();
+  const month = String(dt.getMonth() + 1).padStart(2, '0');
+  const day = String(dt.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 export default function App() {
   const [currentUser, setCurrentUser] = useState(() => {
     const saved = sessionStorage.getItem("iitm_user")
@@ -111,7 +120,7 @@ export default function App() {
   // Active leave verification check on startup/login
   const checkActiveLeaveForToday = async (user) => {
     if (!user) return
-    const today = new Date().toISOString().slice(0, 10)
+    const today = getLocalDateString()
     const sessionKey = `leave_reason_submitted_${user.id}_${today}`
     if (sessionStorage.getItem(sessionKey)) return
 
@@ -154,7 +163,7 @@ export default function App() {
         body: JSON.stringify({ reason: activeLeaveReason })
       })
       if (res.ok) {
-        const today = new Date().toISOString().slice(0, 10)
+        const today = getLocalDateString()
         sessionStorage.setItem(`leave_reason_submitted_${currentUser.id}_${today}`, "true")
         setActiveLeaveModalOpen(false)
         setActiveLeaveReason("")

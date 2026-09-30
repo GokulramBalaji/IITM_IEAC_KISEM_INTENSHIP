@@ -38,6 +38,15 @@ function AnimatedCounter({ to }) {
   return <span>{count}</span>
 }
 
+function getLocalDateString(d = new Date()) {
+  const dt = (d instanceof Date && !isNaN(d.getTime())) ? d : new Date(d);
+  if (isNaN(dt.getTime())) return new Date().toISOString().slice(0, 10);
+  const year = dt.getFullYear();
+  const month = String(dt.getMonth() + 1).padStart(2, '0');
+  const day = String(dt.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 export default function DashboardView({ instruments = [], currentUser, setActiveView }) {
   const role = (currentUser?.role || "engineer").toLowerCase()
   const isIntern = role === "intern" || role === "trainee"
@@ -85,18 +94,21 @@ export default function DashboardView({ instruments = [], currentUser, setActive
   }, [currentUser, canManageHR])
 
   // Work metrics calculation
+  const todayStr = getLocalDateString()
+  const isTodayRecord = todayAttendance && todayAttendance.date === todayStr
+  const activeTodayAtt = isTodayRecord ? todayAttendance : null
+
   const myTasks = tasks.filter(t => String(t.assignedTo) === String(currentUser?.id))
   const myPendingTasks = myTasks.filter(t => t.status === "in_progress" || t.status === "assigned")
   const myCompletedToday = myTasks.filter(t => {
     if (t.status !== "completed") return false
     const d = t.updatedAt || t.date
-    return d && d.slice(0, 10) === new Date().toISOString().slice(0, 10)
+    return d && d.slice(0, 10) === todayStr
   })
 
   // Leave metrics calculation
   const myLeaves = leaves.filter(l => String(l.userId) === String(currentUser?.id))
   const myPendingLeaves = myLeaves.filter(l => l.status === "submitted")
-  const todayStr = new Date().toISOString().slice(0, 10)
   const activeTodayLeave = myLeaves.find(l => l.status === "approved" && todayStr >= l.fromDate && todayStr <= l.toDate)
 
   // Equipment metrics
@@ -164,17 +176,17 @@ export default function DashboardView({ instruments = [], currentUser, setActive
               <UserCheck className="w-4 h-4 text-emerald-500 group-hover:scale-110 transition-transform" />
             </CardHeader>
             <CardContent>
-              {todayAttendance?.checkIn ? (
+              {activeTodayAtt?.checkIn ? (
                 <div>
                   <div className="flex items-center gap-2">
                     <span className="text-xl font-bold text-emerald-600">Present</span>
                     <Badge className="bg-emerald-100 text-emerald-800 border-emerald-200 text-[10px] h-4">
-                      {todayAttendance.checkOut ? "Completed" : "Checked In"}
+                      {activeTodayAtt.checkOut ? "Completed" : "Checked In"}
                     </Badge>
                   </div>
                   <p className="text-[11px] text-muted-foreground mt-1">
-                    In: <strong className="text-foreground">{new Date(todayAttendance.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</strong>
-                    {todayAttendance.checkOut && ` · Out: ${new Date(todayAttendance.checkOut).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`}
+                    In: <strong className="text-foreground">{new Date(activeTodayAtt.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</strong>
+                    {activeTodayAtt.checkOut && ` · Out: ${new Date(activeTodayAtt.checkOut).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`}
                   </p>
                 </div>
               ) : (

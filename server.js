@@ -238,6 +238,32 @@ const safeDateString = (dateVal, fallback = 'N/A') => {
   return isNaN(d.getTime()) ? fallback : d.toLocaleDateString();
 };
 
+const getLocalDateString = (d = new Date()) => {
+  if (db && typeof db.getLocalDateString === 'function') {
+    return db.getLocalDateString(d);
+  }
+  const dt = (d instanceof Date && !isNaN(d.getTime())) ? d : new Date(d);
+  if (isNaN(dt.getTime())) return new Date().toISOString().slice(0, 10);
+  const year = dt.getFullYear();
+  const month = String(dt.getMonth() + 1).padStart(2, '0');
+  const day = String(dt.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+// Periodic attendance sweep for day rollover (auto check-out past open check-ins across all staff at 00:00 midnight)
+setInterval(async () => {
+  try {
+    if (db && typeof db.reconcileOverdueAttendance === 'function') {
+      const changed = await db.reconcileOverdueAttendance();
+      if (changed) {
+        try { io.emit('attendance_updated', { type: 'rollover_auto_checkout' }); } catch (_) {}
+      }
+    }
+  } catch (err) {
+    console.error('Periodic attendance sweep error:', err);
+  }
+}, 30 * 1000);
+
 // Dedicated route for forcing xlsx downloads with correct headers
 app.get('/download/:filename', authenticateToken, async (req, res) => {
   const filename = path.basename(req.params.filename); // sanitize — prevent path traversal
@@ -2273,12 +2299,12 @@ app.get('/api/daily-reports', authenticateToken, async (req, res) => {
   res.json(enriched);
 });
 app.get('/api/daily-reports/today', authenticateToken, async (req, res) => {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = getLocalDateString();
   const report = await db.getDailyReportByEmployeeDate(req.user.id, today);
   res.json(report || null);
 });
 app.post('/api/daily-reports', authenticateToken, async (req, res) => {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = getLocalDateString();
   const date = req.body.date || today;
   // Prevent duplicate for same day (allow update instead)
   const existing = await db.getDailyReportByEmployeeDate(req.user.id, date);
@@ -2600,6 +2626,7 @@ app.delete('/api/holidays/:id', authenticateToken, requireRole(['admin', 'hr']),
 
 // ═ ATTENDANCE ══════════════════════════════════════════════════════════════
 app.get('/api/attendance', authenticateToken, async (req, res) => {
+  await db.reconcileOverdueAttendance();
   const role = (req.user.role || '').toLowerCase();
   if (role === 'admin' || role === 'hr' || role === 'manager') {
     const records = await db.getAttendance();
@@ -2614,7 +2641,8 @@ app.get('/api/attendance', authenticateToken, async (req, res) => {
   }
 });
 app.get('/api/attendance/today', authenticateToken, async (req, res) => {
-  const today = req.query.date || new Date().toISOString().slice(0, 10);
+  await db.reconcileOverdueAttendance();
+  const today = req.query.date || getLocalDateString();
   const records = await db.getAttendance();
   const record = records.find(a => String(a.userId) === String(req.user.id) && a.date === today);
   res.json(record ? { ...record, employeeId: record.userId } : null);
@@ -2622,7 +2650,8 @@ app.get('/api/attendance/today', authenticateToken, async (req, res) => {
 
 app.post('/api/attendance/checkin', authenticateToken, async (req, res) => {
   try {
-    const today = req.body?.date || new Date().toISOString().slice(0, 10);
+    await db.reconcileOverdueAttendance();
+    const today = req.body?.date || getLocalDateString();
     const records = await db.getAttendance();
     const existing = records.find(a => String(a.userId) === String(req.user.id) && a.date === today);
     if (existing && existing.checkIn) {
@@ -2647,7 +2676,8 @@ app.post('/api/attendance/checkin', authenticateToken, async (req, res) => {
 
 app.post('/api/attendance/checkout', authenticateToken, async (req, res) => {
   try {
-    const today = req.body?.date || new Date().toISOString().slice(0, 10);
+    await db.reconcileOverdueAttendance();
+    const today = req.body?.date || getLocalDateString();
     const records = await db.getAttendance();
     const existing = records.find(a => String(a.userId) === String(req.user.id) && a.date === today);
     if (!existing || !existing.checkIn) {
@@ -2728,7 +2758,7 @@ app.post('/api/hr/attendance/mark', authenticateToken, requireRole(['admin', 'hr
 
 // ═ ACTIVE LEAVE PRESENT REASON (POPUP SUBMISSION) ═══════════════════════════
 app.post('/api/attendance/leave-present-reason', authenticateToken, async (req, res) => {
-  const { reason, date = new Date().toISOString().slice(0, 10) } = req.body;
+  const { reason, date = getLocalDateString() } = req.body;
   if (!reason || !reason.trim()) {
     return res.status(400).json({ error: 'Reason for attending today is required.' });
   }
@@ -3592,7 +3622,7 @@ app.get('/api/hr-stats', authenticateToken, requireRole(['admin', 'hr', 'manager
   const leaveReqs = await db.getLeaveRequests();
   const dailyReports = await db.getDailyReports();
   const holidays = await db.getHolidays();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = getLocalDateString();
   const now = new Date();
 
   // Determine period start and end
