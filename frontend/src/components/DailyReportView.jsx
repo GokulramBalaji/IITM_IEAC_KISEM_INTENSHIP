@@ -202,11 +202,17 @@ export default function DailyReportView({ currentUser }) {
 
         let leaveDetails = "None"
         if (leaveAppliedToday.length > 0) {
-          leaveDetails = leaveAppliedToday.map(l =>
-            `Applied: ${l.leaveTypeName || "Leave"} (${l.fromDate} to ${l.toDate}) [${(l.status || "").toUpperCase()}]: ${l.reason || "No reason"}`
-          ).join("; ")
+          leaveDetails = leaveAppliedToday.map(l => {
+            const approverInfo = l.status === "approved" && (l.approvedByName || l.approvedBy)
+              ? ` (Accepted by: ${l.approvedByName || l.approvedBy}${l.approvedByRole ? ' [' + l.approvedByRole.toUpperCase() + ']' : ''})`
+              : (l.status === "submitted" || l.status === "pending" ? " (Pending HR/Admin Acceptance)" : "")
+            return `Applied: ${l.leaveTypeName || "Leave"} (${l.fromDate || l.startDate} to ${l.toDate || l.endDate}) [${(l.status || "").toUpperCase()}]${approverInfo}: ${l.reason || "No reason"}`
+          }).join("; ")
         } else if (activeLeave) {
-          leaveDetails = `Active Leave: ${activeLeave.leaveTypeName || "Leave"} (${activeLeave.fromDate} to ${activeLeave.toDate}) [APPROVED]: ${activeLeave.reason || "No reason"}`
+          const approverInfo = (activeLeave.approvedByName || activeLeave.approvedBy)
+            ? ` (Accepted by: ${activeLeave.approvedByName || activeLeave.approvedBy}${activeLeave.approvedByRole ? ' [' + activeLeave.approvedByRole.toUpperCase() + ']' : ''})`
+            : ""
+          leaveDetails = `Active Leave: ${activeLeave.leaveTypeName || "Leave"} (${activeLeave.fromDate || activeLeave.startDate} to ${activeLeave.toDate || activeLeave.endDate}) [APPROVED]${approverInfo}: ${activeLeave.reason || "No reason"}`
         }
 
         return {

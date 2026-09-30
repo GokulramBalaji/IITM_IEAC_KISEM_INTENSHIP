@@ -458,7 +458,11 @@ export default function App() {
       case "my-leaves":
         return <MyLeavesView currentUser={currentUser} />
       case "leave-approval":
-        return <LeaveApprovalView currentUser={currentUser} />
+        return canManageHR ? (
+          <LeaveApprovalView currentUser={currentUser} />
+        ) : (
+          <DashboardView instruments={instruments} currentUser={currentUser} setActiveView={setActiveView} />
+        )
       case "leave-calendar":
         return canManageHR ? (
           <LeaveCalendarView currentUser={currentUser} />

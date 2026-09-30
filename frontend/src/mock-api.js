@@ -1830,23 +1830,118 @@ window.fetch = async function (url, options = {}) {
 
     if (path === '/api/leave-requests') {
       if (method === 'GET') {
-        const { data, error } = await supabase.from('leave_requests').select('*').order('applied_at', { ascending: false });
-        if (error) return errorResponse(error.message);
-        return jsonResponse(snakeToCamel(data || []));
+        let query = supabase.from('leave_requests').select('*');
+        const userRole = (user?.role || '').toLowerCase();
+        // If not HR or Admin, only return current user's leaves
+        if (userRole !== 'admin' && userRole !== 'hr' && userRole !== 'manager' && user?.id) {
+          query = query.or(`employee_id.eq.${user.id},user_id.eq.${user.id}`);
+        }
+        const { data, error } = await query;
+        if (error) {
+          const fallback = await supabase.from('leave_requests').select('*');
+          if (fallback.error) return errorResponse(fallback.error.message);
+          return jsonResponse(snakeToCamel(fallback.data || []));
+        }
+
+        const { data: usersList } = await supabase.from('users').select('*');
+        const enriched = (data || []).map(r => {
+          const u = (usersList || []).find(x => String(x.id) === String(r.employee_id || r.user_id)) || {};
+          const approver = (usersList || []).find(x => String(x.id) === String(r.approved_by_id || r.approved_by)) || {};
+          const rawStatus = (r.status || 'submitted').toLowerCase();
+          const normalizedStatus = rawStatus === 'pending' ? 'submitted' : rawStatus;
+
+          return {
+            ...r,
+            userId: r.employee_id || r.user_id,
+            employeeName: r.employee_name || r.requested_by_name || u.name || 'Employee',
+            employeeEmail: r.employee_email || r.requested_by_email || u.email || '',
+            employeeRole: (r.employee_role || r.requested_by_role || u.role || 'engineer').toLowerCase(),
+            requestedByName: r.requested_by_name || r.employee_name || u.name || 'Employee',
+            requestedByRole: (r.requested_by_role || r.employee_role || u.role || 'engineer').toLowerCase(),
+            requestedByEmail: r.requested_by_email || r.employee_email || u.email || '',
+            fromDate: r.from_date || r.start_date,
+            toDate: r.to_date || r.end_date,
+            startDate: r.start_date || r.from_date,
+            endDate: r.end_date || r.to_date,
+            approvedByName: r.approved_by_name || (typeof r.approved_by === 'string' && isNaN(Number(r.approved_by)) && !r.approved_by.startsWith('usr-') ? r.approved_by : approver.name || ''),
+            approvedByRole: r.approved_by_role || (approver.role ? approver.role.toLowerCase() : 'hr'),
+            approvedAt: r.approved_at,
+            approvalRemarks: r.approval_remarks || r.remarks || '',
+            rejectedByName: r.rejected_by_name || r.approved_by_name || '',
+            rejectedByRole: r.rejected_by_role || '',
+            rejectedAt: r.rejected_at || (normalizedStatus === 'rejected' ? r.approved_at : null),
+            rejectionReason: r.rejection_reason || r.remarks || '',
+            status: normalizedStatus,
+            createdAt: r.created_at || r.applied_at || new Date().toISOString()
+          };
+        }).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+        return jsonResponse(snakeToCamel(enriched));
       }
+
       if (method === 'POST') {
+        const userRole = (user?.role || 'engineer').toLowerCase();
+        const isHrOrAdmin = userRole === 'admin' || userRole === 'hr';
+        const now = new Date().toISOString();
+
+        // If HR or Admin applies, it is auto-approved; if anyone else applies (intern, trainee, engineer, auditor), it must be accepted by HR or Admin
+        const initialStatus = isHrOrAdmin ? 'approved' : 'submitted';
+        const fromDate = body.fromDate || body.start_date || body.startDate;
+        const toDate = body.toDate || body.end_date || body.endDate;
+
         const lr = {
           id: 'LR-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
-          employee_id: body.employeeId || body.employee_id || user?.id || 'emp-1',
+          employee_id: user?.id || body.employeeId || 'emp-1',
+          employee_name: user?.name || 'Employee',
+          employee_email: user?.email || '',
+          employee_role: userRole,
+          requested_by_id: user?.id || 'emp-1',
+          requested_by_name: user?.name || 'Employee',
+          requested_by_email: user?.email || '',
+          requested_by_role: userRole,
           leave_type_id: body.leaveTypeId || body.leave_type_id || 'LT-CL',
-          start_date: body.startDate || body.start_date,
-          end_date: body.endDate || body.end_date,
+          from_date: fromDate,
+          to_date: toDate,
+          start_date: fromDate,
+          end_date: toDate,
           days: Number(body.days || 1),
+          is_half_day: !!body.isHalfDay,
           reason: body.reason || '',
-          status: 'pending'
+          emergency_leave: !!body.emergencyLeave,
+          contact_during_leave: body.contactDuringLeave || '',
+          status: initialStatus,
+          approved_by: isHrOrAdmin ? (user?.name || 'HR/Admin') : null,
+          approved_by_id: isHrOrAdmin ? user?.id : null,
+          approved_by_name: isHrOrAdmin ? (user?.name || 'HR/Admin') : null,
+          approved_by_role: isHrOrAdmin ? userRole : null,
+          approved_at: isHrOrAdmin ? now : null,
+          approval_remarks: isHrOrAdmin ? 'Self-approved (HR/Admin)' : null,
+          created_at: now,
+          applied_at: now
         };
+
         const { data, error } = await supabase.from('leave_requests').insert(lr).select().single();
-        if (error) return errorResponse(error.message);
+        if (error) {
+          // If insert fails due to missing optional columns in supabase schema, insert safe core columns
+          const coreLr = {
+            id: lr.id,
+            employee_id: lr.employee_id,
+            leave_type_id: lr.leave_type_id,
+            start_date: fromDate,
+            end_date: toDate,
+            days: lr.days,
+            reason: lr.reason,
+            status: lr.status,
+            approved_by: lr.approved_by,
+            approved_at: lr.approved_at
+          };
+          const fb = await supabase.from('leave_requests').insert(coreLr).select().single();
+          if (fb.error) return errorResponse(fb.error.message);
+          return jsonResponse({
+            ...snakeToCamel(fb.data),
+            ...snakeToCamel(lr)
+          });
+        }
         return jsonResponse(snakeToCamel(data));
       }
     }
@@ -1854,16 +1949,74 @@ window.fetch = async function (url, options = {}) {
     if (path.startsWith('/api/leave-requests/')) {
       const sub = path.replace('/api/leave-requests/', '');
       const [lrId, action] = sub.split('/');
+      const userRole = (user?.role || '').toLowerCase();
+      const isHrOrAdmin = userRole === 'admin' || userRole === 'hr';
+
       if (action === 'approve') {
-        const { data, error } = await supabase.from('leave_requests').update({ status: 'approved', approved_by: user?.name || 'HR Admin', approved_at: new Date().toISOString() }).eq('id', lrId).select().single();
-        if (error) return errorResponse(error.message);
+        if (!isHrOrAdmin) {
+          return errorResponse('Access denied. Only HR and Admin can accept or approve leave requests.', 403);
+        }
+        const now = new Date().toISOString();
+        const approverName = user?.name || 'HR/Admin';
+        const comments = body.comments || `Accepted by ${approverName} (${userRole.toUpperCase()})`;
+
+        const updatePayload = {
+          status: 'approved',
+          approved_by: approverName,
+          approved_by_id: user?.id,
+          approved_by_name: approverName,
+          approved_by_role: userRole,
+          approved_by_email: user?.email || '',
+          approved_at: now,
+          approval_remarks: comments,
+          remarks: comments
+        };
+        const { data, error } = await supabase.from('leave_requests').update(updatePayload).eq('id', lrId).select().single();
+        if (error) {
+          const fb = await supabase.from('leave_requests').update({
+            status: 'approved',
+            approved_by: approverName,
+            approved_at: now
+          }).eq('id', lrId).select().single();
+          if (fb.error) return errorResponse(fb.error.message);
+          return jsonResponse(snakeToCamel({ ...fb.data, ...updatePayload }));
+        }
         return jsonResponse(snakeToCamel(data));
       }
+
       if (action === 'reject') {
-        const { data, error } = await supabase.from('leave_requests').update({ status: 'rejected', approved_by: user?.name || 'HR Admin', approved_at: new Date().toISOString(), remarks: body.remarks || 'Rejected' }).eq('id', lrId).select().single();
-        if (error) return errorResponse(error.message);
+        if (!isHrOrAdmin) {
+          return errorResponse('Access denied. Only HR and Admin can reject leave requests.', 403);
+        }
+        const now = new Date().toISOString();
+        const rejecterName = user?.name || 'HR/Admin';
+        const comments = body.comments || body.remarks || `Rejected by ${rejecterName} (${userRole.toUpperCase()})`;
+
+        const updatePayload = {
+          status: 'rejected',
+          approved_by: rejecterName,
+          rejected_by_id: user?.id,
+          rejected_by_name: rejecterName,
+          rejected_by_role: userRole,
+          rejected_by_email: user?.email || '',
+          rejected_at: now,
+          rejection_reason: comments,
+          remarks: comments
+        };
+        const { data, error } = await supabase.from('leave_requests').update(updatePayload).eq('id', lrId).select().single();
+        if (error) {
+          const fb = await supabase.from('leave_requests').update({
+            status: 'rejected',
+            approved_by: rejecterName,
+            approved_at: now,
+            remarks: updatePayload.remarks
+          }).eq('id', lrId).select().single();
+          if (fb.error) return errorResponse(fb.error.message);
+          return jsonResponse(snakeToCamel({ ...fb.data, ...updatePayload }));
+        }
         return jsonResponse(snakeToCamel(data));
       }
+
       if (action === 'cancel') {
         const { data, error } = await supabase.from('leave_requests').update({ status: 'cancelled' }).eq('id', lrId).select().single();
         if (error) return errorResponse(error.message);

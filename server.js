@@ -2344,15 +2344,34 @@ app.put('/api/leave-balance/:employeeId/:leaveTypeId', authenticateToken, requir
 app.get('/api/leave-requests', authenticateToken, async (req, res) => {
   const role = (req.user.role || '').toLowerCase();
   let reqs = await db.getLeaveRequests();
-  if (role === 'engineer' || role === 'trainee') {
+  // Only HR and Admin can view all workforce leave requests; others see only their own
+  if (role !== 'admin' && role !== 'hr' && role !== 'manager') {
     reqs = reqs.filter(r => String(r.userId) === String(req.user.id));
   }
   const users = await db.getUsers();
   const leaveTypes = await db.getLeaveTypes();
   const enriched = reqs.map(r => {
-    const u = users.find(u => String(u.id) === String(r.userId)) || {};
+    const u = users.find(x => String(x.id) === String(r.userId)) || {};
+    const approver = users.find(x => String(x.id) === String(r.approvedBy)) || {};
+    const rejecter = users.find(x => String(x.id) === String(r.rejectedBy)) || {};
     const lt = leaveTypes.find(t => String(t.id) === String(r.leaveTypeId)) || {};
-    return { ...r, employeeName: u.name || '', leaveTypeName: lt.name || '', leaveTypeCode: lt.code || '', color: lt.color || '#64748b' };
+    return {
+      ...r,
+      employeeName: r.employeeName || r.requestedByName || u.name || '',
+      employeeEmail: r.employeeEmail || r.requestedByEmail || u.email || '',
+      employeeRole: (r.employeeRole || r.requestedByRole || u.role || 'engineer').toLowerCase(),
+      requestedByName: r.requestedByName || r.employeeName || u.name || '',
+      requestedByEmail: r.requestedByEmail || r.employeeEmail || u.email || '',
+      requestedByRole: (r.requestedByRole || r.employeeRole || u.role || 'engineer').toLowerCase(),
+      approvedByName: r.approvedByName || approver.name || '',
+      approvedByRole: (r.approvedByRole || approver.role || '').toLowerCase(),
+      approvedByEmail: r.approvedByEmail || approver.email || '',
+      rejectedByName: r.rejectedByName || rejecter.name || '',
+      rejectedByRole: (r.rejectedByRole || rejecter.role || '').toLowerCase(),
+      leaveTypeName: lt.name || '',
+      leaveTypeCode: lt.code || '',
+      color: lt.color || '#64748b'
+    };
   }).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
   res.json(enriched);
 });
@@ -2378,33 +2397,70 @@ app.post('/api/leave-requests', authenticateToken, async (req, res) => {
   const workingDays = calcWorkingDays(fromDate, toDate, holidays, settings.weekendDays || ['Saturday', 'Sunday']);
   const users = await db.getUsers();
   const user = users.find(u => String(u.id) === String(req.user.id)) || {};
+  const userRole = (req.user.role || user.role || 'engineer').toLowerCase();
+  const isHrOrAdmin = userRole === 'admin' || userRole === 'hr';
 
   // Check balance
   await db.initLeaveBalancesForUser(req.user.id, new Date().getFullYear());
   const balance = await db.getLeaveBalance(req.user.id, leaveTypeId);
   const days = isHalfDay ? 0.5 : workingDays;
   const lt = await db.getLeaveTypeById(leaveTypeId);
+
+  // If HR or Admin applies, it is auto-approved. If anyone else applies (intern, trainee, engineer, auditor), it must be accepted by HR or Admin
+  const status = isHrOrAdmin ? 'approved' : 'submitted';
+  const approvedBy = isHrOrAdmin ? req.user.id : null;
+  const approvedByName = isHrOrAdmin ? (user.name || 'HR/Admin') : null;
+  const approvedByRole = isHrOrAdmin ? userRole : null;
+  const approvedByEmail = isHrOrAdmin ? (user.email || req.user.email || '') : null;
+  const approvedAt = isHrOrAdmin ? new Date().toISOString() : null;
+
   const lr = await db.insertLeaveRequest({
-    userId: req.user.id, employeeName: user.name || '',
-    leaveTypeId, fromDate, toDate, isHalfDay: !!isHalfDay,
-    days, workingDays, reason, emergencyLeave: !!emergencyLeave, contactDuringLeave,
-    status: 'submitted'
+    userId: req.user.id,
+    employeeName: user.name || '',
+    employeeEmail: user.email || req.user.email || '',
+    employeeRole: userRole,
+    requestedById: req.user.id,
+    requestedByName: user.name || '',
+    requestedByEmail: user.email || req.user.email || '',
+    requestedByRole: userRole,
+    leaveTypeId,
+    fromDate,
+    toDate,
+    isHalfDay: !!isHalfDay,
+    days,
+    workingDays,
+    reason,
+    emergencyLeave: !!emergencyLeave,
+    contactDuringLeave,
+    status,
+    approvedBy,
+    approvedByName,
+    approvedByRole,
+    approvedByEmail,
+    approvedAt,
+    approvalRemarks: isHrOrAdmin ? 'Self-approved (HR/Admin)' : null
   });
 
-  // Update pending days in balance if balance record exists
+  // Update balance: deduct if approved (HR/Admin), else mark as pending
   if (balance) {
-    await db.upsertLeaveBalance(req.user.id, leaveTypeId, { pendingDays: (balance.pendingDays || 0) + days });
+    if (isHrOrAdmin) {
+      await db.upsertLeaveBalance(req.user.id, leaveTypeId, { usedDays: (balance.usedDays || 0) + days });
+    } else {
+      await db.upsertLeaveBalance(req.user.id, leaveTypeId, { pendingDays: (balance.pendingDays || 0) + days });
+    }
   }
 
-  // Notify admins and HR managers
-  const allUsers = await db.getUsers();
-  const approvers = allUsers.filter(u => ['admin', 'hr', 'manager'].includes((u.role || '').toLowerCase()));
-  for (const approver of approvers) {
-    await createNotification(approver.id, 'leave_applied', 'Leave Request Received',
-      `${user.name || 'Employee'} has applied for ${lt ? lt.name : 'leave'} from ${fromDate} to ${toDate}`,
-      { leaveRequestId: lr.id });
+  // Notify admins and HR managers if submitted by non-HR/admin
+  if (!isHrOrAdmin) {
+    const allUsers = await db.getUsers();
+    const approvers = allUsers.filter(u => ['admin', 'hr'].includes((u.role || '').toLowerCase()));
+    for (const approver of approvers) {
+      await createNotification(approver.id, 'leave_applied', 'Leave Request Pending Acceptance',
+        `${user.name || 'Employee'} (${userRole.toUpperCase()}) applied for ${lt ? lt.name : 'leave'} from ${fromDate} to ${toDate}. Acceptance required.`,
+        { leaveRequestId: lr.id });
+    }
   }
-  await auditLog(req.user.id, req.user.email, 'CREATE', 'leave_request', lr.id, { leaveTypeId, fromDate, toDate, days });
+  await auditLog(req.user.id, req.user.email, 'CREATE', 'leave_request', lr.id, { leaveTypeId, fromDate, toDate, days, status });
   res.json(lr);
 });
 
@@ -2412,21 +2468,41 @@ app.get('/api/leave-requests/:id', authenticateToken, async (req, res) => {
   const lr = await db.getLeaveRequestById(req.params.id);
   if (!lr) return res.status(404).json({ error: 'Leave request not found.' });
   const role = (req.user.role || '').toLowerCase();
-  if (role !== 'admin' && role !== 'manager' && String(lr.userId) !== String(req.user.id)) {
+  if (role !== 'admin' && role !== 'hr' && String(lr.userId) !== String(req.user.id)) {
     return res.status(403).json({ error: 'Access denied.' });
   }
   const approvals = await db.getLeaveApprovalsByRequest(lr.id);
   res.json({ ...lr, approvals });
 });
 
-app.post('/api/leave-requests/:id/approve', authenticateToken, requireRole(['admin', 'hr', 'manager']), async (req, res) => {
+app.post('/api/leave-requests/:id/approve', authenticateToken, requireRole(['admin', 'hr']), async (req, res) => {
   const lr = await db.getLeaveRequestById(req.params.id);
   if (!lr) return res.status(404).json({ error: 'Leave request not found.' });
   if (lr.status === 'approved') return res.status(400).json({ error: 'Already approved.' });
   const users = await db.getUsers();
   const approver = users.find(u => String(u.id) === String(req.user.id)) || {};
-  await db.insertLeaveApproval({ leaveRequestId: lr.id, approvedBy: req.user.id, approverName: approver.name || '', action: 'approved', comments: req.body.comments || '' });
-  await db.updateLeaveRequest(lr.id, { status: 'approved', approvedBy: req.user.id, approvedAt: new Date().toISOString() });
+  const approverRole = (req.user.role || approver.role || 'admin').toLowerCase();
+
+  const comments = req.body.comments || `Accepted by ${approver.name || 'HR/Admin'} (${approverRole.toUpperCase()})`;
+  await db.insertLeaveApproval({
+    leaveRequestId: lr.id,
+    approvedBy: req.user.id,
+    approverName: approver.name || '',
+    approverRole,
+    action: 'approved',
+    comments
+  });
+
+  await db.updateLeaveRequest(lr.id, {
+    status: 'approved',
+    approvedBy: req.user.id,
+    approvedByName: approver.name || '',
+    approvedByRole: approverRole,
+    approvedByEmail: approver.email || req.user.email || '',
+    approvedAt: new Date().toISOString(),
+    approvalRemarks: comments
+  });
+
   // Update balance: convert pending to used
   const balance = await db.getLeaveBalance(lr.userId, lr.leaveTypeId);
   if (balance) {
@@ -2435,25 +2511,45 @@ app.post('/api/leave-requests/:id/approve', authenticateToken, requireRole(['adm
       pendingDays: Math.max(0, (balance.pendingDays || 0) - lr.days)
     });
   }
-  await createNotification(lr.userId, 'leave_approved', 'Leave Approved',
-    `Your leave request from ${lr.fromDate} to ${lr.toDate} has been approved.`, { leaveRequestId: lr.id });
-  await auditLog(req.user.id, req.user.email, 'APPROVE', 'leave_request', lr.id, {});
+  await createNotification(lr.userId, 'leave_approved', 'Leave Request Accepted',
+    `Your leave request from ${lr.fromDate} to ${lr.toDate} has been accepted by ${approver.name || 'HR/Admin'} (${approverRole.toUpperCase()}).`, { leaveRequestId: lr.id });
+  await auditLog(req.user.id, req.user.email, 'APPROVE', 'leave_request', lr.id, { approvedBy: approver.name, approverRole, comments });
   res.json({ ok: true });
 });
 
-app.post('/api/leave-requests/:id/reject', authenticateToken, requireRole(['admin', 'hr', 'manager']), async (req, res) => {
+app.post('/api/leave-requests/:id/reject', authenticateToken, requireRole(['admin', 'hr']), async (req, res) => {
   const lr = await db.getLeaveRequestById(req.params.id);
   if (!lr) return res.status(404).json({ error: 'Leave request not found.' });
   const users = await db.getUsers();
   const rejecter = users.find(u => String(u.id) === String(req.user.id)) || {};
-  await db.insertLeaveApproval({ leaveRequestId: lr.id, approvedBy: req.user.id, approverName: rejecter.name || '', action: 'rejected', comments: req.body.comments || '' });
-  await db.updateLeaveRequest(lr.id, { status: 'rejected', rejectedBy: req.user.id, rejectedAt: new Date().toISOString(), rejectionReason: req.body.comments || '' });
+  const rejecterRole = (req.user.role || rejecter.role || 'admin').toLowerCase();
+
+  const comments = req.body.comments || `Rejected by ${rejecter.name || 'HR/Admin'} (${rejecterRole.toUpperCase()})`;
+  await db.insertLeaveApproval({
+    leaveRequestId: lr.id,
+    approvedBy: req.user.id,
+    approverName: rejecter.name || '',
+    approverRole: rejecterRole,
+    action: 'rejected',
+    comments
+  });
+
+  await db.updateLeaveRequest(lr.id, {
+    status: 'rejected',
+    rejectedBy: req.user.id,
+    rejectedByName: rejecter.name || '',
+    rejectedByRole: rejecterRole,
+    rejectedByEmail: rejecter.email || req.user.email || '',
+    rejectedAt: new Date().toISOString(),
+    rejectionReason: comments
+  });
+
   // Release pending days
   const balance = await db.getLeaveBalance(lr.userId, lr.leaveTypeId);
   if (balance) await db.upsertLeaveBalance(lr.userId, lr.leaveTypeId, { pendingDays: Math.max(0, (balance.pendingDays || 0) - lr.days) });
-  await createNotification(lr.userId, 'leave_rejected', 'Leave Rejected',
-    `Your leave request from ${lr.fromDate} to ${lr.toDate} has been rejected. Reason: ${req.body.comments || 'N/A'}`, { leaveRequestId: lr.id });
-  await auditLog(req.user.id, req.user.email, 'REJECT', 'leave_request', lr.id, { reason: req.body.comments });
+  await createNotification(lr.userId, 'leave_rejected', 'Leave Request Rejected',
+    `Your leave request from ${lr.fromDate} to ${lr.toDate} has been rejected by ${rejecter.name || 'HR/Admin'}. Reason: ${comments}`, { leaveRequestId: lr.id });
+  await auditLog(req.user.id, req.user.email, 'REJECT', 'leave_request', lr.id, { rejectedBy: rejecter.name, rejecterRole, reason: comments });
   res.json({ ok: true });
 });
 

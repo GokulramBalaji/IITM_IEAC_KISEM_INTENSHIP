@@ -310,6 +310,35 @@ export default function MyLeavesView({ currentUser }) {
                       </p>
                     )}
 
+                    {lr.status === "approved" && (
+                      <div className="mt-2.5 rounded-lg bg-emerald-50/80 border border-emerald-200 p-2.5 text-xs text-emerald-900 flex items-center justify-between flex-wrap gap-2">
+                        <div className="flex items-center gap-1.5">
+                          <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                          <span>
+                            Accepted & Granted by: <strong>{lr.approvedByName || "HR/Admin"}</strong>{" "}
+                            ({(lr.approvedByRole || "Admin").toUpperCase()})
+                          </span>
+                        </div>
+                        {lr.approvedAt && (
+                          <span className="text-[11px] text-emerald-800/80">
+                            Accepted on: {new Date(lr.approvedAt).toLocaleDateString()}
+                          </span>
+                        )}
+                        {lr.approvalRemarks && (
+                          <p className="w-full text-xs italic text-emerald-800 pt-1 border-t border-emerald-200/60">
+                            Notes: "{lr.approvalRemarks}"
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {(lr.status === "submitted" || lr.status === "pending") && (
+                      <div className="mt-2.5 rounded-lg bg-amber-50/80 border border-amber-200 p-2.5 text-xs text-amber-900 flex items-center gap-2">
+                        <Clock className="w-4 h-4 text-amber-600 shrink-0" />
+                        <span>Awaiting Acceptance by HR or Admin. (Valid only upon acceptance)</span>
+                      </div>
+                    )}
+
                     {lr.rejectionReason && (
                       <div className="mt-2.5 rounded-lg bg-red-50 border border-red-200 p-2.5 text-xs text-red-700 dark:bg-red-950/20 dark:border-red-800/40 dark:text-red-400">
                         <strong>Rejection Reason:</strong> {lr.rejectionReason}
