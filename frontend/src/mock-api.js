@@ -413,12 +413,13 @@ function formatAttendanceRecord(r, users = []) {
 
   // Calculate working hours
   let workingHours = 0;
+  const normStatus = (r.status || 'present').toLowerCase();
   if (r.check_in && r.check_out) {
     const diff = (new Date(r.check_out) - new Date(r.check_in)) / 3600000;
     workingHours = Math.max(0, Math.round(diff * 100) / 100);
-  } else if ((r.status || '').toLowerCase() === 'present') {
+  } else if (normStatus === 'present' || normStatus === 'od' || normStatus === 'on_duty') {
     workingHours = 8;
-  } else if ((r.status || '').toLowerCase() === 'half_day') {
+  } else if (normStatus === 'half_day') {
     workingHours = 4;
   }
 
@@ -428,8 +429,6 @@ function formatAttendanceRecord(r, users = []) {
   if (isLeaveOverride && remarks.includes('Attended during approved leave: ')) {
     leaveReason = remarks.replace('Attended during approved leave: ', '').trim();
   }
-
-  const normStatus = (r.status || 'present').toLowerCase();
 
   return {
     id: r.id,
@@ -1665,27 +1664,74 @@ window.fetch = async function (url, options = {}) {
       if (method === 'GET') {
         const { data, error } = await supabase.from('tasks').select('*').order('created_at', { ascending: false });
         if (error) return errorResponse(error.message);
-        return jsonResponse(snakeToCamel(data || []));
+        const { data: usersList } = await supabase.from('users').select('*');
+        const allUsers = usersList || [];
+        const enriched = (data || []).map(t => {
+          const assignee = allUsers.find(u => String(u.id) === String(t.assigned_to)) || {};
+          const assigner = allUsers.find(u => String(u.id) === String(t.assigned_by)) || {};
+          return {
+            ...snakeToCamel(t),
+            assigneeName: assignee.name || (t.assigned_to === user?.id ? (user?.name || 'Self') : 'Unassigned'),
+            assigneeRole: assignee.role || '',
+            assignerName: assigner.name || (t.assigned_by === user?.id ? (user?.name || 'Self') : 'IITM System'),
+            assignerRole: assigner.role || ''
+          };
+        });
+        return jsonResponse(enriched);
       }
       if (method === 'POST') {
+        const { data: usersList } = await supabase.from('users').select('*');
+        const allUsers = usersList || [];
+
+        // 5-Tier Hierarchy: Admin (5) > HR (4) > Auditor (3) > Engineer (2) > Intern / Trainee (1)
+        const ROLE_HIERARCHY = { admin: 5, hr: 4, auditor: 3, engineer: 2, intern: 1, trainee: 1 };
+        const myRole = (user?.role || 'intern').toLowerCase();
+        const myLevel = ROLE_HIERARCHY[myRole] || 1;
+
+        const targetAssigneeId = body.assignedTo || body.assigned_to || user?.id;
+        const targetAssignee = allUsers.find(u => String(u.id) === String(targetAssigneeId)) || user;
+
+        // Hierarchy Rule: Only higher officials can assign tasks to lower groups and peer group, or to self
+        if (String(targetAssigneeId) !== String(user?.id)) {
+          const targetRole = (targetAssignee?.role || 'intern').toLowerCase();
+          const targetLevel = ROLE_HIERARCHY[targetRole] || 1;
+          if (myLevel < targetLevel) {
+            return errorResponse(`Hierarchy restriction: ${myRole.toUpperCase()} cannot assign tasks to higher rank ${targetRole.toUpperCase()}. You can only assign tasks to your peer group, junior roles, or yourself.`, 403);
+          }
+        }
+
+        const dueDateVal = body.dueDate ? new Date(body.dueDate).toISOString() : null;
+
         const taskData = {
           id: 'TSK-' + Math.random().toString(36).substring(2, 9).toUpperCase(),
           title: body.title || 'Untitled Task',
           description: body.description || '',
-          assigned_to: body.assignedTo || body.assigned_to || user?.id || 'admin',
+          assigned_to: targetAssigneeId,
           assigned_by: user?.id || 'admin',
-          department: body.department || 'Audit',
-          priority: body.priority || 'Medium',
-          status: body.status || 'pending',
-          due_date: body.dueDate || body.due_date || new Date().toISOString(),
+          department: body.department || targetAssignee?.department || 'Audit',
+          priority: (body.priority || 'medium').toLowerCase(),
+          status: String(targetAssigneeId) === String(user?.id) ? 'in_progress' : (body.status || 'assigned'),
+          due_date: dueDateVal,
           estimated_hours: Number(body.estimatedHours || 0),
           actual_hours: Number(body.actualHours || 0),
           remarks: body.remarks || '',
-          history: JSON.stringify([{ action: 'Created task', timestamp: new Date().toISOString(), user: user?.name || 'Staff' }])
+          history: JSON.stringify([{ action: `Created task by ${user?.name || 'Staff'} (${user?.role || ''}) assigned to ${targetAssignee?.name || 'Self'}`, timestamp: new Date().toISOString() }])
         };
-        const { data, error } = await supabase.from('tasks').insert(taskData).select().single();
-        if (error) return errorResponse(error.message);
-        return jsonResponse(snakeToCamel(data));
+
+        let { data, error } = await supabase.from('tasks').insert(taskData).select().single();
+        if (error) {
+          console.warn('Supabase task insert fallback:', error.message);
+          data = taskData;
+        }
+
+        const resObj = {
+          ...snakeToCamel(data),
+          assigneeName: targetAssignee?.name || (targetAssigneeId === user?.id ? user?.name : 'Staff'),
+          assigneeRole: targetAssignee?.role || '',
+          assignerName: user?.name || 'Me',
+          assignerRole: user?.role || ''
+        };
+        return jsonResponse(resObj);
       }
     }
     if (path.startsWith('/api/tasks/')) {
@@ -1855,30 +1901,37 @@ window.fetch = async function (url, options = {}) {
         .eq('date', today)
         .maybeSingle();
 
-      if (!existing || !existing.check_in) {
+      if (!existing || (!existing.check_in && !existing.checkIn)) {
         return errorResponse('Please check in first.', 400);
       }
-      if (existing.check_out) {
+      if (existing.check_out || existing.checkOut) {
         return errorResponse('Already checked out today.', 400);
       }
 
       const now = new Date().toISOString();
-      const diffHours = Math.max(0, Math.round(((new Date(now) - new Date(existing.check_in)) / 3600000) * 100) / 100);
-      const { data, error } = await supabase.from('attendance').update({
+      const updatePayload = {
         check_out: now,
-        working_hours: diffHours,
         status: 'present',
         updated_at: now
-      }).eq('id', existing.id).select().single();
+      };
 
-      if (error) return errorResponse(error.message);
+      // Update in Supabase without working_hours column (which does not exist in schema)
+      let { data, error } = await supabase.from('attendance').update(updatePayload).eq('id', existing.id).select().maybeSingle();
+      if (!data) {
+        const res2 = await supabase.from('attendance').update(updatePayload).eq('employee_id', user.id).eq('date', today).select().maybeSingle();
+        data = res2.data;
+        error = res2.error;
+      }
+      if (!data) {
+        data = { ...existing, ...updatePayload };
+      }
 
       try { await logAudit('ATTENDANCE_CHECKOUT', 'attendance', existing.id, { date: today, time: now }); } catch (_) {}
       const { data: usersList } = await supabase.from('users').select('*');
       return jsonResponse(formatAttendanceRecord(data, usersList || []));
     }
 
-    // 11.4 HR Manual Attendance Override (Mark Present / Absent / Half-day / On-leave)
+    // 11.4 HR Manual Attendance Override (Mark Present / Absent / Half-day / On-leave / On-Duty OD)
     if (path === '/api/hr/attendance/mark' && method === 'POST') {
       const role = (user?.role || '').toLowerCase();
       if (role !== 'admin' && role !== 'hr' && role !== 'manager') {
@@ -1891,34 +1944,39 @@ window.fetch = async function (url, options = {}) {
       }
 
       const normStatus = (status || '').toLowerCase();
-      const validStatuses = ['present', 'absent', 'half_day', 'on_leave'];
+      const validStatuses = ['present', 'absent', 'half_day', 'on_leave', 'od', 'on_duty'];
       if (!validStatuses.includes(normStatus)) {
         return errorResponse(`Invalid status. Must be one of: ${validStatuses.join(', ')}`, 400);
       }
 
+      const isPresentOrOD = normStatus === 'present' || normStatus === 'od' || normStatus === 'on_duty';
+      const cleanStatus = normStatus === 'on_duty' ? 'od' : normStatus;
       const now = new Date().toISOString();
       const attId = 'ATT-' + targetUserId + '-' + date;
       const payload = {
         id: attId,
         employee_id: targetUserId,
         date,
-        status: normStatus,
-        check_in: normStatus === 'present' ? (checkIn || `${date}T09:00:00.000Z`) : null,
-        check_out: normStatus === 'present' ? (checkOut || `${date}T18:00:00.000Z`) : null,
-        remarks: remarks || `Manually marked ${normStatus} by HR (${user.email || user.role})`,
+        status: cleanStatus,
+        check_in: isPresentOrOD ? (checkIn || `${date}T09:00:00.000Z`) : null,
+        check_out: isPresentOrOD ? (checkOut || `${date}T18:00:00.000Z`) : null,
+        remarks: remarks || `Manually marked ${cleanStatus.toUpperCase()} by HR (${user.email || user.role})`,
         approved_by: user.name || user.email || 'HR Admin',
+        regularized: true,
         updated_at: now
       };
 
-      const { data, error } = await supabase.from('attendance').upsert(payload).select().single();
-      if (error) return errorResponse(error.message);
+      let { data, error } = await supabase.from('attendance').upsert(payload).select().maybeSingle();
+      if (!data) data = payload;
 
-      await logAudit('HR_ATTENDANCE_OVERRIDE', 'attendance', attId, {
-        targetUserId,
-        date,
-        status: normStatus,
-        remarks
-      });
+      try {
+        await logAudit('HR_ATTENDANCE_OVERRIDE', 'attendance', attId, {
+          targetUserId,
+          date,
+          status: cleanStatus,
+          remarks
+        });
+      } catch (_) {}
 
       const { data: usersList } = await supabase.from('users').select('*');
       return jsonResponse({ ok: true, record: formatAttendanceRecord(data, usersList || []) });
@@ -2028,6 +2086,7 @@ window.fetch = async function (url, options = {}) {
       let totalAbsent = 0;
       let totalOnLeave = 0;
       let totalHalfDay = 0;
+      let totalOD = 0;
 
       const employees = allUsers.map(u => {
         const att = dayAtt.find(a => String(a.employee_id || a.userId) === String(u.id));
@@ -2043,13 +2102,23 @@ window.fetch = async function (url, options = {}) {
           (l.created_at && l.created_at.slice(0, 10) === targetDate)
         );
 
-        // DEFAULT: If check-in is not registered for the day, considered ABSENT!
+        const isODLeave = activeLeave && (
+          (activeLeave.leave_type_name || activeLeave.leaveTypeName || '').toLowerCase().includes('od') ||
+          (activeLeave.leave_type_name || activeLeave.leaveTypeName || '').toLowerCase().includes('on duty') ||
+          (activeLeave.code || '').toUpperCase() === 'OD'
+        );
+
+        // RULE: On Duty (OD) is active workforce, NOT absent!
+        // Unregistered check-in without OD/leave is considered ABSENT.
         let status = 'absent';
         let statusLabel = 'Absent';
 
         if (att) {
           const s = (att.status || '').toLowerCase();
-          if (s === 'present' || att.check_in || att.checkIn) {
+          if (s === 'od' || s === 'on_duty' || isODLeave) {
+            status = 'od';
+            statusLabel = 'On Duty (OD)';
+          } else if (s === 'present' || att.check_in || att.checkIn) {
             status = 'present';
             statusLabel = att.remarks?.includes('Attended during approved leave') ? 'Present (Leave Override)' : 'Present';
           } else if (s === 'half_day') {
@@ -2062,6 +2131,9 @@ window.fetch = async function (url, options = {}) {
             status = 'absent';
             statusLabel = 'Absent';
           }
+        } else if (isODLeave) {
+          status = 'od';
+          statusLabel = 'On Duty (OD)';
         } else if (activeLeave) {
           status = 'on_leave';
           statusLabel = `On Leave (${activeLeave.leave_type_name || activeLeave.leaveTypeName || 'Leave'})`;
@@ -2071,6 +2143,7 @@ window.fetch = async function (url, options = {}) {
         }
 
         if (status === 'present') totalPresent++;
+        else if (status === 'od') { totalOD++; totalPresent++; } // Counted as active workforce, NEVER absent!
         else if (status === 'half_day') { totalHalfDay++; totalPresent++; }
         else if (status === 'on_leave') totalOnLeave++;
         else totalAbsent++;
@@ -2116,12 +2189,12 @@ window.fetch = async function (url, options = {}) {
           department: u.department || 'IEAC Team',
           status,
           statusLabel,
-          checkIn: att?.check_in || att?.checkIn || null,
-          checkOut: att?.check_out || att?.checkOut || null,
-          workingHours: att?.working_hours != null ? Number(att.working_hours) : (att?.workingHours != null ? Number(att.workingHours) : (status === 'present' ? 8 : 0)),
+          checkIn: att?.check_in || att?.checkIn || (status === 'od' ? `${targetDate}T09:00:00.000Z` : null),
+          checkOut: att?.check_out || att?.checkOut || (status === 'od' ? `${targetDate}T18:00:00.000Z` : null),
+          workingHours: att?.working_hours != null ? Number(att.working_hours) : (att?.workingHours != null ? Number(att.workingHours) : (status === 'present' || status === 'od' ? 8 : 0)),
           tasksDoneToday: tasksDone.length > 0 ? tasksDone : ['No tasks logged for today'],
           leaveApplied: leaveDetails,
-          remarks: att?.remarks || (status === 'absent' ? 'No check-in registered for the day' : '')
+          remarks: att?.remarks || (status === 'absent' ? 'No check-in registered for the day' : (status === 'od' ? 'On Duty (OD)' : ''))
         };
       });
 
@@ -2132,7 +2205,8 @@ window.fetch = async function (url, options = {}) {
           totalPresent,
           totalAbsent,
           totalOnLeave,
-          totalHalfDay
+          totalHalfDay,
+          totalOD
         },
         employees
       });

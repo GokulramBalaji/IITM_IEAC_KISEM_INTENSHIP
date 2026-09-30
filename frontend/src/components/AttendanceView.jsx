@@ -133,9 +133,13 @@ export default function AttendanceView({ currentUser }) {
   const checkOut = async () => {
     setActing(true)
     try {
+      const token = localStorage.getItem("token") || sessionStorage.getItem("token")
+      const headers = { "Content-Type": "application/json" }
+      if (token) headers["Authorization"] = `Bearer ${token}`
+
       const res = await fetch("/api/attendance/checkout", {
         method: "POST",
-        headers: { "Content-Type": "application/json" }
+        headers
       })
       if (res.ok) {
         await loadSelf()
@@ -179,11 +183,42 @@ export default function AttendanceView({ currentUser }) {
     }
   }
 
+  // Quick 1-click HR Mark OD (On Duty) - NOT treated as absent
+  const quickMarkOD = async (employee) => {
+    try {
+      const res = await fetch("/api/hr/attendance/mark", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: employee.id,
+          employeeId: employee.id,
+          date: selectedManageDate,
+          status: "od",
+          checkIn: `${selectedManageDate}T09:00:00.000Z`,
+          checkOut: `${selectedManageDate}T18:00:00.000Z`,
+          remarks: "Marked On Duty (OD) by HR"
+        })
+      })
+      if (res.ok) {
+        await loadHRData()
+        await loadSelf()
+      } else {
+        const d = await res.json()
+        alert(d.error || "Failed to mark OD.")
+      }
+    } catch (err) {
+      alert("Error marking OD: " + err.message)
+    }
+  }
+
   // Open HR Mark Modal
   const openMarkModal = (user, status) => {
     setTargetEmployee(user)
     setTargetStatus(status)
-    setTargetRemarks(status === "present" ? "Verified on duty by HR" : (status === "half_day" ? "Marked half-day by HR" : "Marked absent by HR"))
+    const defaultRemark = status === "present" ? "Verified on duty by HR"
+      : (status === "od" ? "Assigned On Duty (OD) by HR"
+      : (status === "half_day" ? "Marked half-day by HR" : "Marked absent by HR"))
+    setTargetRemarks(defaultRemark)
     setMarkModalOpen(true)
   }
 
@@ -193,8 +228,9 @@ export default function AttendanceView({ currentUser }) {
     setSubmittingMark(true)
 
     try {
-      const checkInIso = targetStatus === "present" ? `${selectedManageDate}T${targetCheckIn}:00.000Z` : null
-      const checkOutIso = targetStatus === "present" ? `${selectedManageDate}T${targetCheckOut}:00.000Z` : null
+      const isPresentOrOD = targetStatus === "present" || targetStatus === "od"
+      const checkInIso = isPresentOrOD ? `${selectedManageDate}T${targetCheckIn}:00.000Z` : null
+      const checkOutIso = isPresentOrOD ? `${selectedManageDate}T${targetCheckOut}:00.000Z` : null
 
       const res = await fetch("/api/hr/attendance/mark", {
         method: "POST",
@@ -235,18 +271,24 @@ export default function AttendanceView({ currentUser }) {
   const avgHours = weekHistory.length > 0 ? (totalHoursThisWeek / weekHistory.length).toFixed(1) : 0
 
   // HR Workforce KPI stats for selected date
+  // RULE: OD is NOT treated as absent!
   const hrMetrics = {
     total: allUsers.length,
     present: allUsers.filter(u => {
       const a = allAttendance.find(x => String(x.userId || x.employeeId) === String(u.id) && x.date === selectedManageDate)
-      return (a?.status === "present" || !!a?.checkIn)
+      return (a?.status === "present" || (a?.checkIn && a?.status !== "od"))
+    }).length,
+    od: allUsers.filter(u => {
+      const a = allAttendance.find(x => String(x.userId || x.employeeId) === String(u.id) && x.date === selectedManageDate)
+      return a?.status === "od" || a?.status === "on_duty"
     }).length,
     absent: allUsers.filter(u => {
       const a = allAttendance.find(x => String(x.userId || x.employeeId) === String(u.id) && x.date === selectedManageDate)
-      const isPresent = a?.status === "present" || !!a?.checkIn
+      const isPresent = a?.status === "present" || (a?.checkIn && a?.status !== "od")
+      const isOD = a?.status === "od" || a?.status === "on_duty"
       const isHalfDay = a?.status === "half_day"
       const isOnLeave = a?.status === "on_leave"
-      return !isPresent && !isHalfDay && !isOnLeave
+      return !isPresent && !isOD && !isHalfDay && !isOnLeave
     }).length,
     halfDay: allUsers.filter(u => {
       const a = allAttendance.find(x => String(x.userId || x.employeeId) === String(u.id) && x.date === selectedManageDate)
@@ -259,19 +301,22 @@ export default function AttendanceView({ currentUser }) {
   }
 
   // HR Workforce filtered list for the selected date
-  // RULE: If check-in is not registered for the day, considered ABSENT!
+  // RULE: On Duty (OD) is active workforce, NOT absent!
+  // If check-in is not registered and not on OD/leave, considered ABSENT.
   const filteredHRList = allUsers.filter(u => {
     const matchSearch = (u.name || "").toLowerCase().includes(searchEmployee.toLowerCase()) ||
                         (u.email || "").toLowerCase().includes(searchEmployee.toLowerCase())
     if (!matchSearch) return false
 
     const att = allAttendance.find(a => (String(a.userId || a.employeeId) === String(u.id)) && a.date === selectedManageDate)
-    const isPresent = att?.status === "present" || !!att?.checkIn
+    const isPresent = att?.status === "present" || (att?.checkIn && att?.status !== "od")
+    const isOD = att?.status === "od" || att?.status === "on_duty"
     const isHalfDay = att?.status === "half_day"
     const isOnLeave = att?.status === "on_leave"
-    const isAbsent = !isPresent && !isHalfDay && !isOnLeave
+    const isAbsent = !isPresent && !isOD && !isHalfDay && !isOnLeave
 
     if (statusFilter === "present") return isPresent
+    if (statusFilter === "od") return isOD
     if (statusFilter === "absent") return isAbsent
     if (statusFilter === "half_day") return isHalfDay
     if (statusFilter === "on_leave") return isOnLeave
@@ -431,7 +476,7 @@ export default function AttendanceView({ currentUser }) {
         /* HR WORKFORCE ATTENDANCE CONTROL PANEL */
         <div className="space-y-4">
           {/* HR Workforce Summary KPI Stats for Date */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
             <Card className="border bg-card">
               <CardContent className="p-3">
                 <p className="text-[11px] font-medium text-muted-foreground">Total Workforce</p>
@@ -441,9 +486,16 @@ export default function AttendanceView({ currentUser }) {
             </Card>
             <Card className="border border-green-200 bg-green-50/40">
               <CardContent className="p-3">
-                <p className="text-[11px] font-semibold text-green-700">Total Present Today</p>
+                <p className="text-[11px] font-semibold text-green-700">Present Today</p>
                 <p className="text-xl font-bold mt-0.5 text-green-800">{hrMetrics.present}</p>
                 <p className="text-[10px] text-green-600 mt-0.5">Checked In / Override</p>
+              </CardContent>
+            </Card>
+            <Card className="border border-indigo-200 bg-indigo-50/40">
+              <CardContent className="p-3">
+                <p className="text-[11px] font-semibold text-indigo-700">On Duty (OD)</p>
+                <p className="text-xl font-bold mt-0.5 text-indigo-800">{hrMetrics.od}</p>
+                <p className="text-[10px] text-indigo-600 mt-0.5">Field / Client Site</p>
               </CardContent>
             </Card>
             <Card className="border border-red-200 bg-red-50/40">
@@ -471,7 +523,7 @@ export default function AttendanceView({ currentUser }) {
                     Workforce Attendance Management
                   </CardTitle>
                   <CardDescription className="text-xs">
-                    Employees without check-in are considered Absent. HR can change Absent into Present anytime.
+                    Employees without check-in are considered Absent. On Duty (OD) is active workforce. HR can change attendance anytime.
                   </CardDescription>
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
@@ -497,6 +549,7 @@ export default function AttendanceView({ currentUser }) {
                   >
                     <option value="all">All Statuses ({allUsers.length})</option>
                     <option value="present">Present ({hrMetrics.present})</option>
+                    <option value="od">On Duty OD ({hrMetrics.od})</option>
                     <option value="absent">Absent ({hrMetrics.absent})</option>
                     <option value="half_day">Half Day ({hrMetrics.halfDay})</option>
                     <option value="on_leave">On Leave ({hrMetrics.onLeave})</option>
@@ -529,10 +582,11 @@ export default function AttendanceView({ currentUser }) {
                         const att = allAttendance.find(a => (String(a.userId || a.employeeId) === String(u.id)) && a.date === selectedManageDate)
                         const hasCheckIn = !!att?.checkIn
                         const normStatus = (att?.status || '').toLowerCase()
-                        const isPresent = hasCheckIn || normStatus === "present"
+                        const isOD = normStatus === "od" || normStatus === "on_duty"
+                        const isPresent = !isOD && (hasCheckIn || normStatus === "present")
                         const isHalfDay = normStatus === "half_day"
                         const isOnLeave = normStatus === "on_leave"
-                        const isAbsent = !isPresent && !isHalfDay && !isOnLeave
+                        const isAbsent = !isPresent && !isOD && !isHalfDay && !isOnLeave
 
                         return (
                           <tr key={u.id} className="hover:bg-muted/30 transition-colors">
@@ -547,19 +601,25 @@ export default function AttendanceView({ currentUser }) {
                             </td>
                             <td className="py-3 px-3">
                               <span className={`inline-flex items-center text-[10px] font-semibold px-2.5 py-0.5 rounded-full border ${
+                                isOD ? "bg-indigo-50 text-indigo-700 border-indigo-200" :
                                 isPresent ? "bg-green-50 text-green-700 border-green-200" :
                                 isHalfDay ? "bg-amber-50 text-amber-700 border-amber-200" :
                                 isOnLeave ? "bg-blue-50 text-blue-700 border-blue-200" :
                                 "bg-red-50 text-red-700 border-red-200 font-bold"
                               }`}>
-                                {att?.presentDespiteLeave ? "Present (Leave Override)" : (isPresent ? (hasCheckIn ? "Present (Checked In)" : "Present (HR Override)") : isHalfDay ? "Half Day" : isOnLeave ? "On Leave" : "Absent (No Check-In)")}
+                                {isOD ? "On Duty (OD)" :
+                                 att?.presentDespiteLeave ? "Present (Leave Override)" :
+                                 isPresent ? (hasCheckIn ? "Present (Checked In)" : "Present (HR Override)") :
+                                 isHalfDay ? "Half Day" :
+                                 isOnLeave ? "On Leave" :
+                                 "Absent (No Check-In)"}
                               </span>
                             </td>
                             <td className="py-3 px-3 text-xs font-mono">
-                              {att?.checkIn ? `${formatTime(att.checkIn)} → ${att.checkOut ? formatTime(att.checkOut) : "Active"}` : "—"}
+                              {isOD ? "8.0h (OD)" : att?.checkIn ? `${formatTime(att.checkIn)} → ${att.checkOut ? formatTime(att.checkOut) : "Active"}` : "—"}
                             </td>
                             <td className="py-3 px-3 text-xs text-muted-foreground max-w-[180px] truncate">
-                              {att?.leavePresentReason ? `Attended despite leave: ${att.leavePresentReason}` : (att?.remarks || (isAbsent ? "No check-in registered" : "—"))}
+                              {att?.leavePresentReason ? `Attended despite leave: ${att.leavePresentReason}` : (att?.remarks || (isAbsent ? "No check-in registered" : (isOD ? "On Duty" : "—")))}
                             </td>
                             <td className="py-3 px-3 text-right">
                               {isAbsent ? (
@@ -573,11 +633,18 @@ export default function AttendanceView({ currentUser }) {
                                   </Button>
                                   <Button
                                     size="sm"
+                                    onClick={() => quickMarkOD(u)}
+                                    className="h-7 text-xs bg-indigo-600 hover:bg-indigo-700 text-white font-medium"
+                                  >
+                                    Mark OD
+                                  </Button>
+                                  <Button
+                                    size="sm"
                                     variant="outline"
                                     onClick={() => openMarkModal(u, "present")}
                                     className="h-7 text-xs text-muted-foreground hover:text-foreground"
                                   >
-                                    Custom
+                                    Edit
                                   </Button>
                                 </div>
                               ) : (
@@ -585,18 +652,18 @@ export default function AttendanceView({ currentUser }) {
                                   <Button
                                     size="sm"
                                     variant="outline"
+                                    onClick={() => openMarkModal(u, normStatus || "present")}
+                                    className="h-7 text-xs border-primary/30 text-primary hover:bg-primary/5"
+                                  >
+                                    Edit Attendance
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
                                     onClick={() => openMarkModal(u, "absent")}
                                     className="h-7 text-xs border-red-200 text-red-700 hover:bg-red-50"
                                   >
                                     <UserX className="w-3.5 h-3.5 mr-1" /> Mark Absent
-                                  </Button>
-                                  <Button
-                                    size="sm"
-                                    variant="ghost"
-                                    onClick={() => openMarkModal(u, "half_day")}
-                                    className="h-7 text-xs text-amber-700 hover:bg-amber-50"
-                                  >
-                                    Half-Day
                                   </Button>
                                 </div>
                               )}
@@ -618,7 +685,7 @@ export default function AttendanceView({ currentUser }) {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="text-base font-bold">
-              Mark Employee Attendance ({targetStatus.toUpperCase()})
+              HR Attendance Control ({targetStatus.toUpperCase()})
             </DialogTitle>
             <DialogDescription className="text-xs">
               Updating attendance record for <strong>{targetEmployee?.name}</strong> on <strong>{selectedManageDate}</strong>
@@ -629,17 +696,25 @@ export default function AttendanceView({ currentUser }) {
               <label className="text-xs font-semibold">Attendance Status</label>
               <select
                 value={targetStatus}
-                onChange={(e) => setTargetStatus(e.target.value)}
+                onChange={(e) => {
+                  const newStatus = e.target.value
+                  setTargetStatus(newStatus)
+                  if (newStatus === "od") setTargetRemarks("Marked On Duty (OD) by HR")
+                  else if (newStatus === "present") setTargetRemarks("Verified on duty by HR")
+                  else if (newStatus === "half_day") setTargetRemarks("Marked half-day by HR")
+                  else if (newStatus === "absent") setTargetRemarks("Marked absent by HR")
+                }}
                 className="w-full text-xs rounded-lg border bg-background p-2"
               >
-                <option value="present">Present (Full Day)</option>
+                <option value="present">Present (Full Day - 8h)</option>
+                <option value="od">On Duty (OD — Active Workforce, Not Absent)</option>
                 <option value="half_day">Half Day (4 Hours)</option>
-                <option value="absent">Absent</option>
                 <option value="on_leave">On Leave</option>
+                <option value="absent">Absent</option>
               </select>
             </div>
 
-            {targetStatus === "present" && (
+            {(targetStatus === "present" || targetStatus === "od") && (
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
                   <label className="text-[11px] text-muted-foreground font-medium">Check-In Time</label>
@@ -663,22 +738,21 @@ export default function AttendanceView({ currentUser }) {
             )}
 
             <div className="space-y-1.5">
-              <label className="text-xs font-semibold">HR Remarks / Reason</label>
+              <label className="text-xs font-semibold">HR Note / Reason</label>
               <Input
+                placeholder="Reason or notes for attendance update..."
                 value={targetRemarks}
                 onChange={(e) => setTargetRemarks(e.target.value)}
-                placeholder="e.g. Approved site audit visit, verified by supervisor..."
-                className="text-xs"
-                required
+                className="h-8 text-xs"
               />
             </div>
 
-            <DialogFooter className="gap-2">
-              <Button type="button" variant="outline" onClick={() => setMarkModalOpen(false)}>
+            <DialogFooter className="gap-2 sm:gap-0 pt-2">
+              <Button type="button" variant="outline" size="sm" onClick={() => setMarkModalOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={submittingMark} className="font-semibold">
-                {submittingMark ? "Saving Record..." : "Confirm & Save Attendance"}
+              <Button type="submit" size="sm" disabled={submittingMark} className="bg-primary">
+                {submittingMark ? "Saving..." : "Save Attendance Changes"}
               </Button>
             </DialogFooter>
           </form>
@@ -687,3 +761,4 @@ export default function AttendanceView({ currentUser }) {
     </div>
   )
 }
+

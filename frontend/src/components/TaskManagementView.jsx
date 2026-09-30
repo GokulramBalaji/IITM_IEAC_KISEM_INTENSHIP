@@ -64,17 +64,26 @@ function TaskCard({ task, onOpen, currentUser }) {
           </div>
         </div>
       )}
-      <div className="flex items-center gap-3 mt-3 text-[11px] text-muted-foreground">
-        {task.assigneeName && (
-          <span className="flex items-center gap-1"><User className="w-3 h-3" />{task.assigneeName}</span>
+      <div className="flex flex-wrap items-center gap-2 mt-3 text-[11px] text-muted-foreground border-t pt-2">
+        <span className="flex items-center gap-1 font-medium text-foreground/90">
+          <User className="w-3 h-3 text-primary" />
+          To: {task.assigneeName || (String(task.assignedTo) === String(currentUser?.id) ? "Me" : "Staff")}
+          {task.assigneeRole && <span className="text-[10px] px-1 py-0.5 rounded bg-muted/60 uppercase font-mono">({task.assigneeRole})</span>}
+        </span>
+        <span className="text-muted-foreground/40">•</span>
+        <span className="flex items-center gap-1">
+          By: {task.assignerName || (String(task.assignedBy) === String(currentUser?.id) ? "Me" : "Lead")}
+          {task.assignerRole && <span className="text-[10px] px-1 py-0.5 rounded bg-muted/60 uppercase font-mono">({task.assignerRole})</span>}
+        </span>
+        {String(task.assignedTo) === String(task.assignedBy) && (
+          <span className="px-1.5 py-0.5 rounded text-[9px] bg-primary/10 text-primary font-semibold">Self-Assigned</span>
         )}
         {task.dueDate && (
-          <span className={`flex items-center gap-1 ${isOverdue ? "text-red-500 font-medium" : ""}`}>
+          <span className={`ml-auto flex items-center gap-1 ${isOverdue ? "text-red-500 font-medium" : ""}`}>
             <Calendar className="w-3 h-3" />{new Date(task.dueDate).toLocaleDateString()}
             {isOverdue && " (Overdue)"}
           </span>
         )}
-        {task.id && <span className="font-mono text-[10px] opacity-60">{task.id}</span>}
       </div>
     </div>
   )
@@ -189,8 +198,8 @@ function TaskDetailModal({ task, onClose, currentUser, onRefresh }) {
               )}
               <div className="grid grid-cols-2 gap-3">
                 {[
-                  { label: "Assigned To", value: task.assigneeName },
-                  { label: "Assigned By", value: task.assignerName },
+                  { label: "Assigned To", value: `${task.assigneeName || 'Unassigned'}${task.assigneeRole ? ` (${task.assigneeRole})` : ''}` },
+                  { label: "Assigned By", value: `${task.assignerName || 'Lead'}${task.assignerRole ? ` (${task.assignerRole})` : ''}${String(task.assignedTo) === String(task.assignedBy) ? ' [Self-Assigned]' : ''}` },
                   { label: "Due Date", value: task.dueDate ? new Date(task.dueDate).toLocaleDateString() : "—" },
                   { label: "Estimated Hours", value: task.estimatedHours ? `${task.estimatedHours}h` : "—" },
                   { label: "Project", value: task.project || "—" },
@@ -332,22 +341,75 @@ function TaskDetailModal({ task, onClose, currentUser, onRefresh }) {
   )
 }
 
+const ROLE_HIERARCHY = {
+  admin: 5,
+  hr: 4,
+  auditor: 3,
+  engineer: 2,
+  intern: 1,
+  trainee: 1
+}
+
+const ROLE_DISPLAY_NAMES = {
+  admin: "Admin",
+  hr: "HR",
+  auditor: "Auditor",
+  engineer: "Engineer",
+  intern: "Intern",
+  trainee: "Trainee"
+}
+
 function CreateTaskModal({ onClose, onCreated, currentUser, users }) {
-  const [form, setForm] = useState({ title: "", description: "", assignedTo: "", priority: "medium", dueDate: "", estimatedHours: "", project: "", department: "", category: "" })
+  const myRole = (currentUser?.role || "intern").toLowerCase()
+  const myLevel = ROLE_HIERARCHY[myRole] || 1
+
+  const [form, setForm] = useState({
+    title: "",
+    description: "",
+    assignedTo: currentUser?.id || "",
+    priority: "medium",
+    dueDate: "",
+    estimatedHours: "",
+    project: "",
+    department: "",
+    category: ""
+  })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState("")
-  const role = (currentUser?.role || "").toLowerCase()
 
   const set = (k, v) => setForm(prev => ({ ...prev, [k]: v }))
+
+  // Hierarchy Rule:
+  // Admin > HR > Auditor > Engineer > Intern
+  // Only higher officials can assign tasks to lower groups and their peer group, or to self!
+  const eligibleAssignees = users.filter(u => {
+    if (String(u.id) === String(currentUser?.id)) return true
+    const uRole = (u.role || "intern").toLowerCase()
+    const uLevel = ROLE_HIERARCHY[uRole] || 1
+    return uLevel <= myLevel
+  }).sort((a, b) => {
+    const la = ROLE_HIERARCHY[(a.role || "").toLowerCase()] || 1
+    const lb = ROLE_HIERARCHY[(b.role || "").toLowerCase()] || 1
+    return lb - la
+  })
+
+  const isSelfAssigned = String(form.assignedTo) === String(currentUser?.id)
 
   const submit = async () => {
     if (!form.title.trim()) { setError("Task title is required."); return }
     setSaving(true); setError("")
     try {
+      const payload = {
+        ...form,
+        assignedTo: form.assignedTo || currentUser?.id,
+        dueDate: form.dueDate ? form.dueDate : undefined,
+        estimatedHours: form.estimatedHours ? Number(form.estimatedHours) : undefined
+      }
+
       const res = await fetch("/api/tasks", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...form, estimatedHours: form.estimatedHours ? Number(form.estimatedHours) : undefined })
+        body: JSON.stringify(payload)
       })
       if (res.ok) { onCreated(); onClose() }
       else { const d = await res.json(); setError(d.error || "Failed to create task.") }
@@ -360,6 +422,9 @@ function CreateTaskModal({ onClose, onCreated, currentUser, users }) {
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2"><Plus className="w-4 h-4" />Create New Task</DialogTitle>
+          <DialogDescription className="text-xs">
+            Assigned by: <strong className="text-foreground">{currentUser?.name}</strong> ({ROLE_DISPLAY_NAMES[myRole] || myRole})
+          </DialogDescription>
         </DialogHeader>
         <div className="space-y-3 py-2">
           {error && <div className="rounded-lg bg-destructive/10 text-destructive text-sm px-3 py-2 border border-destructive/20">{error}</div>}
@@ -370,19 +435,51 @@ function CreateTaskModal({ onClose, onCreated, currentUser, users }) {
           <div>
             <label className="text-xs font-medium text-muted-foreground mb-1 block">Description</label>
             <textarea value={form.description} onChange={e => set("description", e.target.value)}
-              className="w-full min-h-[80px] text-sm rounded-md border bg-background px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/20 resize-none" placeholder="Task details..." />
+              className="w-full min-h-[80px] text-sm rounded-md border bg-background px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/20 resize-none" placeholder="Task details and instructions..." />
           </div>
+
+          {/* Assignment with Hierarchy & Self-Assign option */}
+          <div className="rounded-lg border bg-muted/20 p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                <User className="w-3.5 h-3.5 text-primary" /> Assign Task To *
+              </label>
+              <button
+                type="button"
+                onClick={() => set("assignedTo", currentUser?.id)}
+                className={`px-2 py-0.5 text-[11px] rounded font-medium transition-all ${
+                  isSelfAssigned
+                    ? "bg-primary text-primary-foreground shadow-sm"
+                    : "bg-background border text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {isSelfAssigned ? "✓ Assigned to Myself" : "Assign to Myself"}
+              </button>
+            </div>
+
+            <select
+              value={form.assignedTo}
+              onChange={e => set("assignedTo", e.target.value)}
+              className="w-full text-sm rounded-md border bg-background px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/20"
+            >
+              <option value={currentUser?.id}>Me ({currentUser?.name} — {ROLE_DISPLAY_NAMES[myRole] || myRole}) [Self-Assign]</option>
+              {eligibleAssignees
+                .filter(u => String(u.id) !== String(currentUser?.id))
+                .map(u => {
+                  const uRole = (u.role || "intern").toLowerCase()
+                  return (
+                    <option key={u.id} value={u.id}>
+                      {u.name} ({ROLE_DISPLAY_NAMES[uRole] || u.role}) {uRole === myRole ? "[Peer Group]" : "[Subordinate]"}
+                    </option>
+                  )
+                })}
+            </select>
+            <p className="text-[10px] text-muted-foreground">
+              IITM Hierarchy Rule: As <strong>{ROLE_DISPLAY_NAMES[myRole] || myRole}</strong>, you can assign tasks to yourself, your peer group, and lower ranks.
+            </p>
+          </div>
+
           <div className="grid grid-cols-2 gap-3">
-            {(role === "admin" || role === "manager") && (
-              <div>
-                <label className="text-xs font-medium text-muted-foreground mb-1 block">Assign To</label>
-                <select value={form.assignedTo} onChange={e => set("assignedTo", e.target.value)}
-                  className="w-full text-sm rounded-md border bg-background px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/20">
-                  <option value="">Self</option>
-                  {users.filter(u => u.role !== "trainee").map(u => <option key={u.id} value={u.id}>{u.name} ({u.role})</option>)}
-                </select>
-              </div>
-            )}
             <div>
               <label className="text-xs font-medium text-muted-foreground mb-1 block">Priority</label>
               <select value={form.priority} onChange={e => set("priority", e.target.value)}
@@ -429,8 +526,8 @@ export default function TaskManagementView({ currentUser }) {
   const [selectedTask, setSelectedTask] = useState(null)
   const [showCreate, setShowCreate] = useState(false)
 
-  const role = (currentUser?.role || "").toLowerCase()
-  const canCreate = role === "admin" || role === "manager" || role === "engineer"
+  // Every official can create tasks (self-assign or assign to peer/lower groups)
+  const canCreate = !!currentUser
 
   const load = async () => {
     setLoading(true)

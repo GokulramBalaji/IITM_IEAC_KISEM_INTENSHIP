@@ -50,13 +50,14 @@ export default function DailyReportView({ currentUser }) {
   const [loading, setLoading] = useState(true)
   const [exporting, setExporting] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
-  const [statusFilter, setStatusFilter] = useState("all") // all | present | absent | on_leave
+  const [statusFilter, setStatusFilter] = useState("all") // all | present | od | absent | on_leave | half_day
 
   const [reportData, setReportData] = useState({
     date: todayStr,
     summary: {
       totalEmployees: 0,
       totalPresent: 0,
+      totalOD: 0,
       totalAbsent: 0,
       totalOnLeave: 0,
       totalHalfDay: 0
@@ -113,6 +114,7 @@ export default function DailyReportView({ currentUser }) {
       const dayReports = allReports.filter(r => r.date === date)
 
       let totalPresent = 0
+      let totalOD = 0
       let totalAbsent = 0
       let totalOnLeave = 0
       let totalHalfDay = 0
@@ -133,9 +135,20 @@ export default function DailyReportView({ currentUser }) {
         let status = "absent"
         let statusLabel = "Absent"
 
+        const isOdLeave = activeLeave && (
+          (activeLeave.leaveTypeName || "").toLowerCase().includes("od") ||
+          (activeLeave.leaveTypeName || "").toLowerCase().includes("on duty") ||
+          (activeLeave.leave_type_name || "").toLowerCase().includes("od") ||
+          (activeLeave.leave_type_name || "").toLowerCase().includes("on duty") ||
+          (activeLeave.type || "").toLowerCase() === "od"
+        )
+
         if (att) {
           const s = (att.status || "").toLowerCase()
-          if (s === "present" || att.checkIn || att.check_in) {
+          if (s === "od" || s === "on_duty" || isOdLeave) {
+            status = "od"
+            statusLabel = "On Duty (OD)"
+          } else if (s === "present" || att.checkIn || att.check_in) {
             status = "present"
             statusLabel = att.presentDespiteLeave ? "Present (Leave Override)" : "Present"
           } else if (s === "half_day") {
@@ -148,6 +161,9 @@ export default function DailyReportView({ currentUser }) {
             status = "absent"
             statusLabel = "Absent"
           }
+        } else if (isOdLeave) {
+          status = "od"
+          statusLabel = "On Duty (OD)"
         } else if (activeLeave) {
           status = "on_leave"
           statusLabel = `On Leave (${activeLeave.leaveTypeName || activeLeave.leave_type_name || "Leave"})`
@@ -157,6 +173,7 @@ export default function DailyReportView({ currentUser }) {
         }
 
         if (status === "present") totalPresent++
+        else if (status === "od") totalOD++
         else if (status === "half_day") { totalHalfDay++; totalPresent++ }
         else if (status === "on_leave") totalOnLeave++
         else totalAbsent++
@@ -202,7 +219,7 @@ export default function DailyReportView({ currentUser }) {
           statusLabel,
           checkIn: att?.checkIn || att?.check_in || null,
           checkOut: att?.checkOut || att?.check_out || null,
-          workingHours: att?.workingHours != null ? Number(att.workingHours) : (status === "present" ? 8 : 0),
+          workingHours: att?.workingHours != null ? Number(att.workingHours) : ((status === "present" || status === "od") ? 8 : 0),
           tasksDoneToday: tasksDone.length > 0 ? tasksDone : ["No tasks logged for today"],
           leaveApplied: leaveDetails,
           remarks: att?.remarks || (status === "absent" ? "No check-in registered for the day" : "")
@@ -214,6 +231,7 @@ export default function DailyReportView({ currentUser }) {
         summary: {
           totalEmployees: users.length,
           totalPresent,
+          totalOD,
           totalAbsent,
           totalOnLeave,
           totalHalfDay
@@ -257,10 +275,43 @@ export default function DailyReportView({ currentUser }) {
     }
   }
 
+  // Quick 1-click HR Mark OD (On Duty) for absent employee - NEVER treated as absent
+  const quickChangeToOD = async (employee) => {
+    try {
+      const res = await fetch("/api/hr/attendance/mark", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: employee.userId || employee.id,
+          employeeId: employee.userId || employee.id,
+          date: selectedDate,
+          status: "od",
+          checkIn: `${selectedDate}T09:00:00.000Z`,
+          checkOut: `${selectedDate}T18:00:00.000Z`,
+          remarks: "Marked On Duty (OD) by HR"
+        })
+      })
+
+      if (res.ok) {
+        await loadReport(selectedDate)
+      } else {
+        const d = await res.json()
+        alert(d.error || "Failed to update attendance.")
+      }
+    } catch (err) {
+      alert("Error: " + err.message)
+    }
+  }
+
   const handleOpenModal = (emp, status) => {
     setTargetEmployee(emp)
     setTargetStatus(status)
-    setTargetRemarks(status === "present" ? "Verified on duty by HR" : (status === "half_day" ? "Marked half-day by HR" : "Marked absent by HR"))
+    const defaultRemark =
+      status === "present" ? "Verified on duty by HR" :
+      status === "od" ? "Marked On Duty (OD) by HR" :
+      status === "half_day" ? "Marked half-day by HR" :
+      "Marked absent by HR"
+    setTargetRemarks(defaultRemark)
     setMarkModalOpen(true)
   }
 
@@ -270,8 +321,9 @@ export default function DailyReportView({ currentUser }) {
     setSubmittingMark(true)
 
     try {
-      const checkInIso = targetStatus === "present" ? `${selectedDate}T${targetCheckIn}:00.000Z` : null
-      const checkOutIso = targetStatus === "present" ? `${selectedDate}T${targetCheckOut}:00.000Z` : null
+      const isPresentOrOD = targetStatus === "present" || targetStatus === "od"
+      const checkInIso = isPresentOrOD ? `${selectedDate}T${targetCheckIn}:00.000Z` : null
+      const checkOutIso = isPresentOrOD ? `${selectedDate}T${targetCheckOut}:00.000Z` : null
 
       const res = await fetch("/api/hr/attendance/mark", {
         method: "POST",
@@ -354,11 +406,11 @@ export default function DailyReportView({ currentUser }) {
         "",
         `Total Present: ${sum.totalPresent}`,
         "",
+        `On Duty (OD): ${sum.totalOD || 0}`,
+        "",
         `Total Absent: ${sum.totalAbsent}`,
         "",
         `On Leave: ${sum.totalOnLeave}`,
-        "",
-        `Half-Day: ${sum.totalHalfDay}`,
         "",
         `Exported: ${new Date().toLocaleTimeString()}`
       ])
@@ -401,7 +453,7 @@ export default function DailyReportView({ currentUser }) {
       reportData.employees.forEach((emp, i) => {
         const tasksFormatted = emp.tasksDoneToday.map((t, idx) => `${idx + 1}. ${t}`).join("\n")
         const checkInStr = emp.checkIn ? formatTime(emp.checkIn) : "—"
-        const checkOutStr = emp.checkOut ? formatTime(emp.checkOut) : (emp.status === "present" ? "Active" : "—")
+        const checkOutStr = emp.checkOut ? formatTime(emp.checkOut) : (emp.status === "present" || emp.status === "od" ? "Active" : "—")
 
         const row = sheet.getRow(rIdx)
         row.values = [
@@ -428,6 +480,9 @@ export default function DailyReportView({ currentUser }) {
         if (emp.status === "present") {
           statusBg = "DCFCE7"
           statusFg = "166534"
+        } else if (emp.status === "od") {
+          statusBg = "EEF2FF"
+          statusFg = "3730A3"
         } else if (emp.status === "absent") {
           statusBg = "FEE2E2"
           statusFg = "991B1B"
@@ -495,6 +550,7 @@ export default function DailyReportView({ currentUser }) {
     if (!matchesSearch) return false
 
     if (statusFilter === "present") return emp.status === "present"
+    if (statusFilter === "od") return emp.status === "od"
     if (statusFilter === "absent") return emp.status === "absent"
     if (statusFilter === "on_leave") return emp.status === "on_leave"
     if (statusFilter === "half_day") return emp.status === "half_day"
@@ -518,6 +574,7 @@ export default function DailyReportView({ currentUser }) {
   const sum = reportData.summary || {
     totalEmployees: 0,
     totalPresent: 0,
+    totalOD: 0,
     totalAbsent: 0,
     totalOnLeave: 0,
     totalHalfDay: 0
@@ -584,51 +641,62 @@ export default function DailyReportView({ currentUser }) {
       </div>
 
       {/* KPI Summary Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
         <Card className="border bg-card shadow-xs">
-          <CardContent className="p-4">
+          <CardContent className="p-3.5">
             <div className="flex items-center justify-between">
-              <p className="text-xs font-medium text-muted-foreground">Total Workforce</p>
-              <Users className="w-4 h-4 text-muted-foreground" />
+              <p className="text-[11px] font-medium text-muted-foreground">Total Workforce</p>
+              <Users className="w-3.5 h-3.5 text-muted-foreground" />
             </div>
-            <p className="text-3xl font-extrabold mt-1 text-foreground">{sum.totalEmployees}</p>
-            <p className="text-[11px] text-muted-foreground mt-0.5">Active team members</p>
+            <p className="text-2xl font-extrabold mt-1 text-foreground">{sum.totalEmployees}</p>
+            <p className="text-[10px] text-muted-foreground mt-0.5">Active team members</p>
           </CardContent>
         </Card>
 
         <Card className="border border-green-200 bg-green-50/50 shadow-xs">
-          <CardContent className="p-4">
+          <CardContent className="p-3.5">
             <div className="flex items-center justify-between">
-              <p className="text-xs font-bold text-green-700">Total Present Today</p>
-              <CheckCircle2 className="w-4 h-4 text-green-600" />
+              <p className="text-[11px] font-bold text-green-700">Present Today</p>
+              <CheckCircle2 className="w-3.5 h-3.5 text-green-600" />
             </div>
-            <p className="text-3xl font-extrabold mt-1 text-green-800">{sum.totalPresent}</p>
-            <p className="text-[11px] text-green-600 mt-0.5">
-              {Math.round(((sum.totalPresent || 0) / (sum.totalEmployees || 1)) * 100)}% attendance rate
+            <p className="text-2xl font-extrabold mt-1 text-green-800">{sum.totalPresent}</p>
+            <p className="text-[10px] text-green-600 mt-0.5">
+              {Math.round(((sum.totalPresent || 0) / (sum.totalEmployees || 1)) * 100)}% present rate
             </p>
           </CardContent>
         </Card>
 
-        <Card className="border border-red-200 bg-red-50/50 shadow-xs">
-          <CardContent className="p-4">
+        <Card className="border border-indigo-200 bg-indigo-50/50 shadow-xs">
+          <CardContent className="p-3.5">
             <div className="flex items-center justify-between">
-              <p className="text-xs font-bold text-red-700">Total Absent Today</p>
-              <XCircle className="w-4 h-4 text-red-600" />
+              <p className="text-[11px] font-bold text-indigo-700">On Duty (OD)</p>
+              <Briefcase className="w-3.5 h-3.5 text-indigo-600" />
             </div>
-            <p className="text-3xl font-extrabold mt-1 text-red-800">{sum.totalAbsent}</p>
-            <p className="text-[11px] text-red-600 mt-0.5">No check-in registered</p>
+            <p className="text-2xl font-extrabold mt-1 text-indigo-800">{sum.totalOD || 0}</p>
+            <p className="text-[10px] text-indigo-600 mt-0.5">Active (not absent)</p>
+          </CardContent>
+        </Card>
+
+        <Card className="border border-red-200 bg-red-50/50 shadow-xs">
+          <CardContent className="p-3.5">
+            <div className="flex items-center justify-between">
+              <p className="text-[11px] font-bold text-red-700">Absent Today</p>
+              <XCircle className="w-3.5 h-3.5 text-red-600" />
+            </div>
+            <p className="text-2xl font-extrabold mt-1 text-red-800">{sum.totalAbsent}</p>
+            <p className="text-[10px] text-red-600 mt-0.5">No check-in registered</p>
           </CardContent>
         </Card>
 
         <Card className="border border-blue-200 bg-blue-50/50 shadow-xs">
-          <CardContent className="p-4">
+          <CardContent className="p-3.5">
             <div className="flex items-center justify-between">
-              <p className="text-xs font-bold text-blue-700">On Leave / Half-Day</p>
-              <Umbrella className="w-4 h-4 text-blue-600" />
+              <p className="text-[11px] font-bold text-blue-700">Leave / Half-Day</p>
+              <Umbrella className="w-3.5 h-3.5 text-blue-600" />
             </div>
-            <p className="text-3xl font-extrabold mt-1 text-blue-800">{sum.totalOnLeave + sum.totalHalfDay}</p>
-            <p className="text-[11px] text-blue-600 mt-0.5">
-              {sum.totalOnLeave} full leave · {sum.totalHalfDay} half-day
+            <p className="text-2xl font-extrabold mt-1 text-blue-800">{sum.totalOnLeave + sum.totalHalfDay}</p>
+            <p className="text-[10px] text-blue-600 mt-0.5">
+              {sum.totalOnLeave} leave · {sum.totalHalfDay} half-day
             </p>
           </CardContent>
         </Card>
@@ -666,6 +734,7 @@ export default function DailyReportView({ currentUser }) {
               >
                 <option value="all">All Statuses ({sum.totalEmployees})</option>
                 <option value="present">Present Only ({sum.totalPresent})</option>
+                <option value="od">On Duty OD ({sum.totalOD || 0})</option>
                 <option value="absent">Absent Only ({sum.totalAbsent})</option>
                 <option value="on_leave">On Leave Only ({sum.totalOnLeave})</option>
                 <option value="half_day">Half Day ({sum.totalHalfDay})</option>
@@ -698,12 +767,13 @@ export default function DailyReportView({ currentUser }) {
                     <th className="text-left py-3 px-4 font-semibold min-w-[170px]">Check-In / Out</th>
                     <th className="text-left py-3 px-4 font-semibold min-w-[260px]">Tasks Done Today</th>
                     <th className="text-left py-3 px-4 font-semibold min-w-[200px]">Leave Applied / Status</th>
-                    <th className="text-right py-3 px-4 font-semibold min-w-[140px]">HR Verification</th>
+                    <th className="text-right py-3 px-4 font-semibold min-w-[180px]">HR Attendance Control</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
                   {filteredEmployees.map((emp, index) => {
                     const isPresent = emp.status === "present"
+                    const isOD = emp.status === "od"
                     const isAbsent = emp.status === "absent"
                     const isOnLeave = emp.status === "on_leave"
                     const isHalfDay = emp.status === "half_day"
@@ -723,7 +793,7 @@ export default function DailyReportView({ currentUser }) {
                               <p className="text-[10px] text-muted-foreground">{emp.email}</p>
                               <div className="flex items-center gap-1.5 mt-0.5">
                                 <Badge variant="outline" className="text-[9px] h-4 px-1 capitalize">
-                                  {emp.role}
+                                   {emp.role}
                                 </Badge>
                                 <span className="text-[10px] text-muted-foreground/70">· {emp.department}</span>
                               </div>
@@ -733,11 +803,13 @@ export default function DailyReportView({ currentUser }) {
                         <td className="py-3 px-4">
                           <span className={`inline-flex items-center text-[10px] font-semibold px-2.5 py-1 rounded-full border ${
                             isPresent ? "bg-green-50 text-green-700 border-green-200" :
+                            isOD ? "bg-indigo-50 text-indigo-700 border-indigo-200 font-bold" :
                             isHalfDay ? "bg-amber-50 text-amber-700 border-amber-200" :
                             isOnLeave ? "bg-blue-50 text-blue-700 border-blue-200" :
                             "bg-red-50 text-red-700 border-red-200 font-bold"
                           }`}>
                             {isPresent ? <UserCheck className="w-3 h-3 mr-1 text-green-600" /> :
+                             isOD ? <Briefcase className="w-3 h-3 mr-1 text-indigo-600" /> :
                              isOnLeave ? <Umbrella className="w-3 h-3 mr-1 text-blue-600" /> :
                              isHalfDay ? <Clock className="w-3 h-3 mr-1 text-amber-600" /> :
                              <UserX className="w-3 h-3 mr-1 text-red-600" />}
@@ -752,7 +824,7 @@ export default function DailyReportView({ currentUser }) {
                               Out: <span className="text-muted-foreground">{formatTime(emp.checkOut)}</span>
                             </p>
                             <p className="text-[10px] text-muted-foreground">
-                              Duration: <strong className="text-foreground">{emp.workingHours ? `${emp.workingHours} hrs` : (isPresent ? "Active Clock-In" : "0 hrs")}</strong>
+                              Duration: <strong className="text-foreground">{emp.workingHours ? `${emp.workingHours} hrs` : (isPresent || isOD ? "Active Clock-In" : "0 hrs")}</strong>
                             </p>
                           </div>
                         </td>
@@ -777,13 +849,21 @@ export default function DailyReportView({ currentUser }) {
                         </td>
                         <td className="py-3 px-4 text-right">
                           {isAbsent ? (
-                            <div className="flex items-center justify-end gap-1.5">
+                            <div className="flex items-center justify-end gap-1.5 flex-wrap">
                               <Button
                                 size="sm"
                                 onClick={() => quickChangeToPresent(emp)}
                                 className="h-7 text-xs bg-green-600 hover:bg-green-700 text-white font-medium shadow-xs"
                               >
-                                <UserCheck className="w-3 h-3 mr-1" /> Mark Present
+                                <UserCheck className="w-3 h-3 mr-1" /> Present
+                              </Button>
+                              <Button
+                                size="sm"
+                                onClick={() => quickChangeToOD(emp)}
+                                className="h-7 text-xs bg-indigo-600 hover:bg-indigo-700 text-white font-medium shadow-xs"
+                                title="Mark On Duty (OD) - Active workforce, not absent"
+                              >
+                                <Briefcase className="w-3 h-3 mr-1" /> OD
                               </Button>
                               <Button
                                 size="sm"
@@ -795,7 +875,15 @@ export default function DailyReportView({ currentUser }) {
                               </Button>
                             </div>
                           ) : (
-                            <div className="flex items-center justify-end gap-1.5">
+                            <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleOpenModal(emp, emp.status || "present")}
+                                className="h-7 text-xs border-primary/30 text-primary hover:bg-primary/5 font-medium"
+                              >
+                                Edit Attendance
+                              </Button>
                               <Button
                                 size="sm"
                                 variant="outline"
@@ -803,14 +891,6 @@ export default function DailyReportView({ currentUser }) {
                                 className="h-7 text-xs border-red-200 text-red-700 hover:bg-red-50"
                               >
                                 <UserX className="w-3 h-3 mr-1" /> Mark Absent
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                onClick={() => handleOpenModal(emp, "half_day")}
-                                className="h-7 text-xs text-amber-700 hover:bg-amber-50"
-                              >
-                                Half-Day
                               </Button>
                             </div>
                           )}
@@ -841,17 +921,25 @@ export default function DailyReportView({ currentUser }) {
               <label className="text-xs font-semibold">Attendance Status</label>
               <select
                 value={targetStatus}
-                onChange={(e) => setTargetStatus(e.target.value)}
+                onChange={(e) => {
+                  const val = e.target.value
+                  setTargetStatus(val)
+                  if (val === "od") setTargetRemarks("Marked On Duty (OD) by HR")
+                  else if (val === "present") setTargetRemarks("Verified on duty by HR")
+                  else if (val === "half_day") setTargetRemarks("Marked half-day by HR")
+                  else if (val === "absent") setTargetRemarks("Marked absent by HR")
+                }}
                 className="w-full text-xs rounded-lg border bg-background p-2 focus:ring-2 focus:ring-primary/20"
               >
-                <option value="present">Present (Full Day)</option>
+                <option value="present">Present (Full Day - 8h)</option>
+                <option value="od">On Duty (OD — Active Workforce, Not Absent)</option>
                 <option value="half_day">Half Day (4 Hours)</option>
                 <option value="absent">Absent</option>
                 <option value="on_leave">On Leave</option>
               </select>
             </div>
 
-            {targetStatus === "present" && (
+            {(targetStatus === "present" || targetStatus === "od") && (
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
                   <label className="text-[11px] text-muted-foreground font-medium">Check-In Time</label>
@@ -878,7 +966,7 @@ export default function DailyReportView({ currentUser }) {
               <label className="text-xs font-semibold">HR Verification Note / Reason</label>
               <Input
                 type="text"
-                placeholder="e.g. Verified on duty at laboratory"
+                placeholder="e.g. Approved site visit / audit"
                 value={targetRemarks}
                 onChange={(e) => setTargetRemarks(e.target.value)}
                 className="h-8 text-xs"

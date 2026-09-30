@@ -2065,26 +2065,65 @@ app.get('/api/tasks', authenticateToken, async (req, res) => {
 });
 
 app.post('/api/tasks', authenticateToken, requireRole(['admin', 'hr', 'auditor', 'engineer', 'intern', 'trainee', 'manager']), async (req, res) => {
-  const role = (req.user.role || '').toLowerCase();
+  const users = await db.getUsers();
+  const assigner = users.find(u => String(u.id) === String(req.user.id));
+  const myRole = (req.user.role || 'intern').toLowerCase();
+  const myLevel = ROLE_HIERARCHY[myRole] || 1;
+
   const { title, description, assignedTo, priority = 'medium', dueDate, estimatedHours, category, project, department, tags } = req.body;
   if (!title) return res.status(400).json({ error: 'Task title is required.' });
+
+  const targetAssigneeId = assignedTo || req.user.id;
+  const assigneeUser = users.find(u => String(u.id) === String(targetAssigneeId)) || assigner;
+
+  // Hierarchy validation: Admin > HR > Auditor > Engineer > Intern
+  // Only higher officials can assign tasks to lower group and peer group, or to self
+  if (String(targetAssigneeId) !== String(req.user.id)) {
+    const targetRole = (assigneeUser?.role || 'intern').toLowerCase();
+    const targetLevel = ROLE_HIERARCHY[targetRole] || 1;
+    if (myLevel < targetLevel) {
+      return res.status(403).json({
+        error: `Hierarchy restriction: ${myRole.toUpperCase()} cannot assign tasks to higher official ${targetRole.toUpperCase()}. You can only assign tasks to your peer group, junior roles, or yourself.`
+      });
+    }
+  }
+
+  const dueDateVal = dueDate ? new Date(dueDate).toISOString() : null;
+
   const task = await db.insertTask({
-    title, description, assignedTo: assignedTo || req.user.id,
-    assignedBy: req.user.id, priority, dueDate, estimatedHours,
+    title, description,
+    assignedTo: targetAssigneeId,
+    assignedBy: req.user.id,
+    assignedByName: assigner ? assigner.name : req.user.email,
+    assignedByRole: assigner ? assigner.role : req.user.role,
+    assigneeName: assigneeUser ? assigneeUser.name : 'Staff',
+    assigneeRole: assigneeUser ? assigneeUser.role : '',
+    priority: (priority || 'medium').toLowerCase(),
+    dueDate: dueDateVal,
+    estimatedHours,
     category, project, department, tags,
-    status: assignedTo && assignedTo !== req.user.id ? 'assigned' : 'in_progress',
+    status: String(targetAssigneeId) !== String(req.user.id) ? 'assigned' : 'in_progress',
     createdBy: req.user.id
   });
+
   // Notify assignee
-  if (assignedTo && String(assignedTo) !== String(req.user.id)) {
-    const users = await db.getUsers();
-    const assigner = users.find(u => String(u.id) === String(req.user.id));
-    await createNotification(assignedTo, 'task_assigned', 'New Task Assigned',
-      `You have been assigned a new task: "${title}" by ${assigner ? assigner.name : 'Manager'}`,
+  if (String(targetAssigneeId) !== String(req.user.id)) {
+    await createNotification(targetAssigneeId, 'task_assigned', 'New Task Assigned',
+      `You have been assigned a new task: "${title}" by ${assigner ? assigner.name : 'Manager'} (${myRole.toUpperCase()})`,
       { taskId: task.id });
   }
-  await auditLog(req.user.id, req.user.email, 'CREATE', 'task', task.id, { title });
-  res.json(task);
+
+  await auditLog(req.user.id, req.user.email, 'CREATE', 'task', task.id, {
+    title,
+    assignedTo: assigneeUser ? assigneeUser.name : targetAssigneeId,
+    assignedBy: assigner ? assigner.name : req.user.email
+  });
+
+  res.json({
+    ...task,
+    assigneeName: assigneeUser ? assigneeUser.name : 'Staff',
+    assignerName: assigner ? assigner.name : 'Me'
+  });
 });
 
 app.get('/api/tasks/:id', authenticateToken, async (req, res) => {
@@ -2541,30 +2580,34 @@ app.post('/api/hr/attendance/mark', authenticateToken, requireRole(['admin', 'hr
   const targetUser = users.find(u => String(u.id) === String(userId));
   if (!targetUser) return res.status(404).json({ error: 'Employee not found.' });
 
-  const validStatuses = ['present', 'absent', 'half_day', 'on_leave'];
-  if (!validStatuses.includes(status)) {
+  const normStatus = (status || '').toLowerCase();
+  const validStatuses = ['present', 'absent', 'half_day', 'on_leave', 'od', 'on_duty'];
+  if (!validStatuses.includes(normStatus)) {
     return res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
   }
 
+  const cleanStatus = normStatus === 'on_duty' ? 'od' : normStatus;
+  const isPresentOrOD = cleanStatus === 'present' || cleanStatus === 'od';
+
   let workingHours = 0;
-  if (status === 'present') {
+  if (cleanStatus === 'present' || cleanStatus === 'od') {
     if (checkIn && checkOut) {
       const diff = (new Date(checkOut) - new Date(checkIn)) / 3600000;
       workingHours = Math.max(0, Math.round(diff * 10) / 10);
     } else {
       workingHours = 8;
     }
-  } else if (status === 'half_day') {
+  } else if (cleanStatus === 'half_day') {
     workingHours = 4;
   }
 
   const record = await db.upsertAttendance(userId, date, {
     userName: targetUser.name,
-    status,
-    checkIn: status === 'present' ? (checkIn || `${date}T09:00:00.000Z`) : null,
-    checkOut: status === 'present' ? (checkOut || `${date}T18:00:00.000Z`) : null,
+    status: cleanStatus,
+    checkIn: isPresentOrOD ? (checkIn || `${date}T09:00:00.000Z`) : null,
+    checkOut: isPresentOrOD ? (checkOut || `${date}T18:00:00.000Z`) : null,
     workingHours,
-    remarks: remarks || `Marked ${status} by HR (${req.user.email || req.user.role})`
+    remarks: remarks || `Marked ${cleanStatus.toUpperCase()} by HR (${req.user.email || req.user.role})`
   });
 
   try { io.emit('attendance_updated', record); } catch (_) {}
@@ -2636,6 +2679,7 @@ async function buildCumulativeDailyReport(dateStr) {
   let totalAbsent = 0;
   let totalOnLeave = 0;
   let totalHalfDay = 0;
+  let totalOD = 0;
 
   const employees = users.map(u => {
     const att = dayAttendance.find(a => String(a.userId) === String(u.id));
@@ -2654,13 +2698,23 @@ async function buildCumulativeDailyReport(dateStr) {
       (l.createdAt && l.createdAt.slice(0, 10) === targetDate)
     );
 
+    const isODLeave = activeLeave && (
+      (activeLeave.leaveTypeName || '').toLowerCase().includes('od') ||
+      (activeLeave.leaveTypeName || '').toLowerCase().includes('on duty') ||
+      (activeLeave.code || '').toUpperCase() === 'OD'
+    );
+
     // DEFAULT RULE: If check-in is not registered for the day, considered ABSENT!
+    // RULE: On Duty (OD) is active workforce, NOT absent!
     let status = 'absent';
     let statusLabel = 'Absent';
 
     if (att) {
       const s = (att.status || '').toLowerCase();
-      if (s === 'present' || att.checkIn) {
+      if (s === 'od' || s === 'on_duty' || isODLeave) {
+        status = 'od';
+        statusLabel = 'On Duty (OD)';
+      } else if (s === 'present' || att.checkIn) {
         status = 'present';
         statusLabel = att.presentDespiteLeave ? 'Present (Leave Override)' : 'Present';
       } else if (s === 'half_day') {
@@ -2673,6 +2727,9 @@ async function buildCumulativeDailyReport(dateStr) {
         status = 'absent';
         statusLabel = 'Absent';
       }
+    } else if (isODLeave) {
+      status = 'od';
+      statusLabel = 'On Duty (OD)';
     } else if (activeLeave) {
       status = 'on_leave';
       statusLabel = `On Leave (${activeLeave.leaveTypeName || 'Leave'})`;
@@ -2682,6 +2739,7 @@ async function buildCumulativeDailyReport(dateStr) {
     }
 
     if (status === 'present') totalPresent++;
+    else if (status === 'od') { totalOD++; totalPresent++; } // Counted as active workforce, NEVER absent!
     else if (status === 'half_day') { totalHalfDay++; totalPresent++; }
     else if (status === 'on_leave') totalOnLeave++;
     else totalAbsent++;
@@ -2730,12 +2788,12 @@ async function buildCumulativeDailyReport(dateStr) {
       department: u.department || 'IEAC Team',
       status,
       statusLabel,
-      checkIn: att?.checkIn || null,
-      checkOut: att?.checkOut || null,
-      workingHours: att?.workingHours != null ? att.workingHours : (status === 'present' ? 8 : 0),
+      checkIn: att?.checkIn || (status === 'od' ? `${targetDate}T09:00:00.000Z` : null),
+      checkOut: att?.checkOut || (status === 'od' ? `${targetDate}T18:00:00.000Z` : null),
+      workingHours: att?.workingHours != null ? att.workingHours : (status === 'present' || status === 'od' ? 8 : 0),
       tasksDoneToday: tasksDone.length > 0 ? tasksDone : ['No tasks logged for today'],
       leaveApplied: leaveDetails,
-      remarks: att?.remarks || (status === 'absent' ? 'No check-in registered for the day' : '')
+      remarks: att?.remarks || (status === 'absent' ? 'No check-in registered for the day' : (status === 'od' ? 'On Duty (OD)' : ''))
     };
   });
 
@@ -2746,7 +2804,8 @@ async function buildCumulativeDailyReport(dateStr) {
       totalPresent,
       totalAbsent,
       totalOnLeave,
-      totalHalfDay
+      totalHalfDay,
+      totalOD
     },
     employees
   };
@@ -2813,11 +2872,11 @@ app.get('/api/hr/daily-cumulative-report/export', authenticateToken, requireRole
     // KPI Summary Bar
     const sum = reportData.summary;
     sheet.insertRow(3, [
-      `Total Workforce: ${sum.totalEmployees}`,
+      `Total Staff: ${sum.totalEmployees}`,
       '',
-      `Total Present: ${sum.totalPresent}`,
-      '',
-      `Total Absent: ${sum.totalAbsent}`,
+      `Present: ${sum.totalPresent}`,
+      `On Duty (OD): ${sum.totalOD || 0}`,
+      `Absent: ${sum.totalAbsent}`,
       '',
       `On Leave: ${sum.totalOnLeave}`,
       '',
@@ -2826,7 +2885,6 @@ app.get('/api/hr/daily-cumulative-report/export', authenticateToken, requireRole
       `Generated: ${new Date().toLocaleTimeString()}`
     ]);
     sheet.mergeCells('A3:B3');
-    sheet.mergeCells('C3:D3');
     sheet.mergeCells('E3:F3');
     sheet.mergeCells('G3:H3');
     sheet.mergeCells('I3:J3');
@@ -2891,6 +2949,9 @@ app.get('/api/hr/daily-cumulative-report/export', authenticateToken, requireRole
       if (emp.status === 'present') {
         statusBg = 'DCFCE7';
         statusFg = '166534';
+      } else if (emp.status === 'od') {
+        statusBg = 'EEF2FF';
+        statusFg = '3730A3';
       } else if (emp.status === 'absent') {
         statusBg = 'FEE2E2';
         statusFg = '991B1B';
