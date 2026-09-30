@@ -405,6 +405,162 @@ async function generateVendorsExcel(vendorIds, customDb) {
   return new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
 }
 
+// Helper to normalize and enrich attendance records for both camelCase and snake_case consumers
+function formatAttendanceRecord(r, users = []) {
+  if (!r) return null;
+  const empId = r.employee_id || r.employeeId || r.userId || r.user_id;
+  const u = (users || []).find(x => String(x.id) === String(empId)) || {};
+
+  // Calculate working hours
+  let workingHours = 0;
+  if (r.check_in && r.check_out) {
+    const diff = (new Date(r.check_out) - new Date(r.check_in)) / 3600000;
+    workingHours = Math.max(0, Math.round(diff * 100) / 100);
+  } else if ((r.status || '').toLowerCase() === 'present') {
+    workingHours = 8;
+  } else if ((r.status || '').toLowerCase() === 'half_day') {
+    workingHours = 4;
+  }
+
+  const remarks = r.remarks || '';
+  const isLeaveOverride = remarks.includes('Attended during approved leave');
+  let leaveReason = '';
+  if (isLeaveOverride && remarks.includes('Attended during approved leave: ')) {
+    leaveReason = remarks.replace('Attended during approved leave: ', '').trim();
+  }
+
+  const normStatus = (r.status || 'present').toLowerCase();
+
+  return {
+    id: r.id,
+    userId: empId,
+    employeeId: empId,
+    userName: u.name || r.userName || r.user_name || '',
+    employeeName: u.name || r.employeeName || r.userName || '',
+    date: r.date,
+    status: normStatus,
+    checkIn: r.check_in || r.checkIn || null,
+    checkOut: r.check_out || r.checkOut || null,
+    workingHours: r.working_hours != null ? Number(r.working_hours) : (r.workingHours != null ? Number(r.workingHours) : workingHours),
+    workLocation: r.work_location || r.workLocation || 'Office',
+    remarks: remarks,
+    approvedBy: r.approved_by || r.approvedBy || null,
+    presentDespiteLeave: isLeaveOverride || Boolean(r.present_despite_leave || r.presentDespiteLeave),
+    leavePresentReason: leaveReason || r.leave_present_reason || r.leavePresentReason || '',
+    createdAt: r.created_at || r.createdAt || null,
+    updatedAt: r.updated_at || r.updatedAt || null
+  };
+}
+
+// Generate multi-sheet Excel for HR analytics & reporting
+async function generateHRMultiSheetExcel(startDate, endDate, users, attendance, leaves, tasks) {
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = 'IITM IEAC Workforce System';
+  workbook.created = new Date();
+
+  // Generate list of dates
+  const dateList = [];
+  let cur = new Date(startDate);
+  const end = new Date(endDate);
+  while (cur <= end) {
+    dateList.push(cur.toISOString().slice(0, 10));
+    cur.setDate(cur.getDate() + 1);
+  }
+
+  const workingDaysList = dateList.filter(d => new Date(d).getDay() !== 0);
+  const totalWorkingDays = Math.max(1, workingDaysList.length);
+
+  // SHEET 1: Summary
+  const summarySheet = workbook.addWorksheet('Summary & Attendance %', { views: [{ showGridLines: true }] });
+  summarySheet.addRow(['IIT MADRAS - INDUSTRIAL ENERGY ASSESSMENT CELL']);
+  summarySheet.addRow(['HR WORKFORCE ATTENDANCE & TASK PERFORMANCE SUMMARY']);
+  summarySheet.addRow([`Report Period: ${startDate} to ${endDate} (${dateList.length} Calendar Days, ${totalWorkingDays} Working Days)`]);
+  summarySheet.addRow([`Generated on: ${new Date().toLocaleString()}`]);
+  summarySheet.addRow([]);
+
+  const summaryHeaderRow = summarySheet.addRow([
+    'S.No', 'Employee Name', 'Login / Mail ID', 'Designation / Role',
+    'Total Period Days', 'Working Days', 'Days Present', 'Days Absent',
+    'Attendance %', 'Tasks Completed', 'Total Tasks Assigned'
+  ]);
+
+  summaryHeaderRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  summaryHeaderRow.alignment = { vertical: 'middle', horizontal: 'center' };
+  summaryHeaderRow.eachCell(cell => {
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E3A8A' } };
+    cell.border = { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
+  });
+
+  users.forEach((u, idx) => {
+    const userAtt = attendance.filter(a => String(a.userId || a.employeeId) === String(u.id) && dateList.includes(a.date));
+    const daysPresent = userAtt.filter(a => a.status === 'present' || a.checkIn).length;
+    const daysAbsent = Math.max(0, totalWorkingDays - daysPresent);
+    const attPct = Math.min(100, Math.round((daysPresent / totalWorkingDays) * 1000) / 10);
+
+    const userTasks = tasks.filter(t => String(t.assignedTo) === String(u.id));
+    const completedTasks = userTasks.filter(t => t.status === 'completed').length;
+
+    const row = summarySheet.addRow([
+      idx + 1,
+      u.name || 'Unknown',
+      u.email || '—',
+      u.role || 'Staff',
+      dateList.length,
+      totalWorkingDays,
+      daysPresent,
+      daysAbsent,
+      `${attPct}%`,
+      completedTasks,
+      userTasks.length
+    ]);
+    row.eachCell(c => {
+      c.border = { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
+    });
+  });
+
+  summarySheet.columns.forEach(col => { col.width = 22; });
+
+  // SHEET 2...N: Day-wise sheets (limit to max 31 days)
+  const displayDates = dateList.slice(0, 31);
+  displayDates.forEach(dateStr => {
+    const daySheet = workbook.addWorksheet(dateStr, { views: [{ showGridLines: true }] });
+    daySheet.addRow([`IITM IEAC - DAILY WORKFORCE ATTENDANCE REPORT: ${dateStr}`]);
+    daySheet.addRow([]);
+    const dayHeader = daySheet.addRow([
+      'S.No', 'Employee Name', 'Role', 'Status', 'Check In', 'Check Out', 'Hours Logged', 'Remarks'
+    ]);
+    dayHeader.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    dayHeader.eachCell(c => {
+      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E3A8A' } };
+    });
+
+    users.forEach((u, idx) => {
+      const att = attendance.find(a => String(a.userId || a.employeeId) === String(u.id) && a.date === dateStr);
+      const isPresent = att && (att.status === 'present' || att.checkIn);
+      const isHalfDay = att && att.status === 'half_day';
+      const statusText = isPresent ? (att?.presentDespiteLeave ? 'Present (Leave Override)' : 'Present') : (isHalfDay ? 'Half Day' : (att?.status === 'on_leave' ? 'On Leave' : 'Absent'));
+
+      const r = daySheet.addRow([
+        idx + 1,
+        u.name || 'Unknown',
+        u.role || 'Staff',
+        statusText,
+        att?.checkIn ? new Date(att.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—',
+        att?.checkOut ? new Date(att.checkOut).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—',
+        att?.workingHours ? `${att.workingHours} hrs` : '—',
+        att?.leavePresentReason ? `Attended despite leave: ${att.leavePresentReason}` : (att?.remarks || '—')
+      ]);
+      r.eachCell(c => {
+        c.border = { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
+      });
+    });
+    daySheet.columns.forEach(col => { col.width = 20; });
+  });
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  return new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+}
+
 // ----------------------------------------------------
 // Global Interceptor logic for serverless deployment
 // ----------------------------------------------------
@@ -433,7 +589,7 @@ window.fetch = async function (url, options = {}) {
 
   // Helpers to fetch current logged-in user profile cached in sessionStorage
   const getLoggedInUser = () => {
-    const userStr = sessionStorage.getItem('iitm_user');
+    const userStr = sessionStorage.getItem('iitm_user') || sessionStorage.getItem('user');
     if (!userStr) return null;
     try {
       return JSON.parse(userStr);
@@ -1634,41 +1790,646 @@ window.fetch = async function (url, options = {}) {
     }
 
     // --- 11. ATTENDANCE & AVAILABILITY MODULE ---
+
+    // 11.1 Today's attendance for the logged-in user
+    if (path === '/api/attendance/today' && method === 'GET') {
+      const today = new Date().toISOString().slice(0, 10);
+      const targetUserId = user?.id;
+      if (!targetUserId) return jsonResponse(null);
+
+      const { data, error } = await supabase.from('attendance')
+        .select('*')
+        .eq('employee_id', targetUserId)
+        .eq('date', today)
+        .maybeSingle();
+
+      if (error && error.code !== 'PGRST116') return errorResponse(error.message);
+      if (!data) return jsonResponse(null);
+
+      const { data: usersList } = await supabase.from('users').select('*');
+      return jsonResponse(formatAttendanceRecord(data, usersList || []));
+    }
+
+    // 11.2 Check-in for logged-in user
+    if (path === '/api/attendance/checkin' && method === 'POST') {
+      if (!user) return errorResponse('Authentication required.', 401);
+      const today = new Date().toISOString().slice(0, 10);
+      const { data: existing } = await supabase.from('attendance')
+        .select('*')
+        .eq('employee_id', user.id)
+        .eq('date', today)
+        .maybeSingle();
+
+      if (existing && existing.check_in) {
+        return errorResponse('Already checked in today.', 400);
+      }
+
+      const now = new Date().toISOString();
+      const attId = existing?.id || ('ATT-' + user.id + '-' + today);
+      const payload = {
+        id: attId,
+        employee_id: user.id,
+        date: today,
+        status: 'present',
+        check_in: now,
+        work_location: body.workLocation || 'Office',
+        remarks: body.remarks || 'Web portal check-in',
+        updated_at: now
+      };
+
+      const { data, error } = await supabase.from('attendance').upsert(payload).select().single();
+      if (error) return errorResponse(error.message);
+
+      try { await logAudit('ATTENDANCE_CHECKIN', 'attendance', attId, { date: today, time: now }); } catch (_) {}
+      const { data: usersList } = await supabase.from('users').select('*');
+      return jsonResponse(formatAttendanceRecord(data, usersList || []));
+    }
+
+    // 11.3 Check-out for logged-in user
+    if (path === '/api/attendance/checkout' && method === 'POST') {
+      if (!user) return errorResponse('Authentication required.', 401);
+      const today = new Date().toISOString().slice(0, 10);
+      const { data: existing } = await supabase.from('attendance')
+        .select('*')
+        .eq('employee_id', user.id)
+        .eq('date', today)
+        .maybeSingle();
+
+      if (!existing || !existing.check_in) {
+        return errorResponse('Please check in first.', 400);
+      }
+      if (existing.check_out) {
+        return errorResponse('Already checked out today.', 400);
+      }
+
+      const now = new Date().toISOString();
+      const diffHours = Math.max(0, Math.round(((new Date(now) - new Date(existing.check_in)) / 3600000) * 100) / 100);
+      const { data, error } = await supabase.from('attendance').update({
+        check_out: now,
+        working_hours: diffHours,
+        status: 'present',
+        updated_at: now
+      }).eq('id', existing.id).select().single();
+
+      if (error) return errorResponse(error.message);
+
+      try { await logAudit('ATTENDANCE_CHECKOUT', 'attendance', existing.id, { date: today, time: now }); } catch (_) {}
+      const { data: usersList } = await supabase.from('users').select('*');
+      return jsonResponse(formatAttendanceRecord(data, usersList || []));
+    }
+
+    // 11.4 HR Manual Attendance Override (Mark Present / Absent / Half-day / On-leave)
+    if (path === '/api/hr/attendance/mark' && method === 'POST') {
+      const role = (user?.role || '').toLowerCase();
+      if (role !== 'admin' && role !== 'hr' && role !== 'manager') {
+        return errorResponse('Access denied. HR or Admin role required.', 403);
+      }
+      const targetUserId = body.userId || body.employeeId;
+      const { date, status, checkIn, checkOut, remarks } = body;
+      if (!targetUserId || !date || !status) {
+        return errorResponse('User ID, date, and status are required.', 400);
+      }
+
+      const normStatus = (status || '').toLowerCase();
+      const validStatuses = ['present', 'absent', 'half_day', 'on_leave'];
+      if (!validStatuses.includes(normStatus)) {
+        return errorResponse(`Invalid status. Must be one of: ${validStatuses.join(', ')}`, 400);
+      }
+
+      const now = new Date().toISOString();
+      const attId = 'ATT-' + targetUserId + '-' + date;
+      const payload = {
+        id: attId,
+        employee_id: targetUserId,
+        date,
+        status: normStatus,
+        check_in: normStatus === 'present' ? (checkIn || `${date}T09:00:00.000Z`) : null,
+        check_out: normStatus === 'present' ? (checkOut || `${date}T18:00:00.000Z`) : null,
+        remarks: remarks || `Manually marked ${normStatus} by HR (${user.email || user.role})`,
+        approved_by: user.name || user.email || 'HR Admin',
+        updated_at: now
+      };
+
+      const { data, error } = await supabase.from('attendance').upsert(payload).select().single();
+      if (error) return errorResponse(error.message);
+
+      await logAudit('HR_ATTENDANCE_OVERRIDE', 'attendance', attId, {
+        targetUserId,
+        date,
+        status: normStatus,
+        remarks
+      });
+
+      const { data: usersList } = await supabase.from('users').select('*');
+      return jsonResponse({ ok: true, record: formatAttendanceRecord(data, usersList || []) });
+    }
+
+    // 11.5 Active Leave Attendance Reason Submission
+    if (path === '/api/attendance/leave-present-reason' && method === 'POST') {
+      if (!user) return errorResponse('Authentication required.', 401);
+      const { reason, date = new Date().toISOString().slice(0, 10) } = body;
+      if (!reason || !reason.trim()) {
+        return errorResponse('Reason for attending today is required.', 400);
+      }
+
+      const now = new Date().toISOString();
+      const attId = 'ATT-' + user.id + '-' + date;
+      const payload = {
+        id: attId,
+        employee_id: user.id,
+        date,
+        status: 'present',
+        check_in: now,
+        check_out: null,
+        remarks: `Attended during approved leave: ${reason.trim()}`,
+        updated_at: now
+      };
+
+      const { data, error } = await supabase.from('attendance').upsert(payload).select().single();
+      if (error) return errorResponse(error.message);
+
+      // Notify Admins and HR
+      const { data: allUsers } = await supabase.from('users').select('*');
+      const recipients = (allUsers || []).filter(u => ['admin', 'hr'].includes((u.role || '').toLowerCase()));
+      for (const adm of recipients) {
+        try {
+          await supabase.from('notifications').insert({
+            id: 'NOT-' + Math.random().toString(36).substring(2, 8).toUpperCase(),
+            user_id: adm.id,
+            title: 'Active Leave Attendance Alert',
+            message: `${user.name || 'Employee'} logged in and attended work today (${date}) despite an approved leave. Reason: "${reason.trim()}"`,
+            type: 'leave_alert',
+            link: '/attendance',
+            created_at: now
+          });
+        } catch (_) {}
+      }
+
+      await logAudit('LEAVE_OVERRIDE_PRESENT', 'attendance', attId, { reason: reason.trim() });
+      return jsonResponse({
+        ok: true,
+        message: 'Reason recorded and attendance marked as present.',
+        record: formatAttendanceRecord(data, allUsers || [])
+      });
+    }
+
+    // 11.6 Attendance List / All records
     if (path === '/api/attendance') {
       if (method === 'GET') {
-        const { data, error } = await supabase.from('attendance').select('*').order('date', { ascending: false });
-        if (error) return errorResponse(error.message);
-        return jsonResponse(snakeToCamel(data || []));
+        const { data: attList, error: attErr } = await supabase.from('attendance').select('*').order('date', { ascending: false });
+        if (attErr) return errorResponse(attErr.message);
+        const { data: usersList } = await supabase.from('users').select('*');
+        const formatted = (attList || []).map(a => formatAttendanceRecord(a, usersList || []));
+        return jsonResponse(formatted);
       }
       if (method === 'POST') {
-        const attId = 'ATT-' + (body.employeeId || user?.id) + '-' + (body.date || new Date().toISOString().split('T')[0]);
-        const att = {
+        const targetUserId = body.userId || body.employeeId || user?.id || 'emp-1';
+        const targetDate = body.date || new Date().toISOString().split('T')[0];
+        const attId = 'ATT-' + targetUserId + '-' + targetDate;
+        const now = new Date().toISOString();
+        const payload = {
           id: attId,
-          employee_id: body.employeeId || body.employee_id || user?.id || 'emp-1',
-          date: body.date || new Date().toISOString().split('T')[0],
-          status: body.status || 'Present',
-          check_in: body.checkIn || new Date().toISOString(),
+          employee_id: targetUserId,
+          date: targetDate,
+          status: (body.status || 'present').toLowerCase(),
+          check_in: body.checkIn || body.check_in || now,
+          check_out: body.checkOut || body.check_out || null,
           work_location: body.workLocation || 'Office',
-          remarks: body.remarks || ''
+          remarks: body.remarks || '',
+          updated_at: now
         };
-        const { data, error } = await supabase.from('attendance').upsert(att).select().single();
+        const { data, error } = await supabase.from('attendance').upsert(payload).select().single();
         if (error) return errorResponse(error.message);
-        return jsonResponse(snakeToCamel(data));
+        const { data: usersList } = await supabase.from('users').select('*');
+        return jsonResponse(formatAttendanceRecord(data, usersList || []));
       }
     }
 
-    if (path === '/api/availability') {
-      const targetDate = query.date || new Date().toISOString().split('T')[0];
-      const { data: users } = await supabase.from('users').select('*');
-      const { data: leaves } = await supabase.from('leave_requests').select('*').eq('status', 'approved');
-      const onLeaveEmpIds = (leaves || []).filter(l => l.start_date <= targetDate && l.end_date >= targetDate).map(l => l.employee_id);
-      const availableStaff = (users || []).filter(u => !onLeaveEmpIds.includes(u.id));
+    // 11.7 Cumulative Daily Operations & Workforce Report for HR & Admin
+    if (path === '/api/hr/daily-cumulative-report' && method === 'GET') {
+      const role = (user?.role || '').toLowerCase();
+      if (role !== 'admin' && role !== 'hr' && role !== 'manager') {
+        return errorResponse('Access denied. HR or Admin role required.', 403);
+      }
+      const targetDate = query.date || new Date().toISOString().slice(0, 10);
+      const { data: usersList } = await supabase.from('users').select('*');
+      const { data: attList } = await supabase.from('attendance').select('*').eq('date', targetDate);
+      const { data: leavesList } = await supabase.from('leave_requests').select('*');
+      const { data: tasksList } = await supabase.from('tasks').select('*');
+      const { data: reportsList } = await supabase.from('daily_reports').select('*').eq('date', targetDate);
+
+      const allUsers = usersList || [];
+      const dayAtt = attList || [];
+      const allLeaves = leavesList || [];
+      const allTasks = tasksList || [];
+      const dayReports = reportsList || [];
+
+      let totalPresent = 0;
+      let totalAbsent = 0;
+      let totalOnLeave = 0;
+      let totalHalfDay = 0;
+
+      const employees = allUsers.map(u => {
+        const att = dayAtt.find(a => String(a.employee_id || a.userId) === String(u.id));
+        const activeLeave = allLeaves.find(l => 
+          String(l.employee_id || l.userId) === String(u.id) &&
+          l.status === 'approved' &&
+          targetDate >= (l.from_date || l.fromDate) &&
+          targetDate <= (l.to_date || l.toDate)
+        );
+
+        const leaveAppliedToday = allLeaves.filter(l => 
+          String(l.employee_id || l.userId) === String(u.id) &&
+          (l.created_at && l.created_at.slice(0, 10) === targetDate)
+        );
+
+        // DEFAULT: If check-in is not registered for the day, considered ABSENT!
+        let status = 'absent';
+        let statusLabel = 'Absent';
+
+        if (att) {
+          const s = (att.status || '').toLowerCase();
+          if (s === 'present' || att.check_in || att.checkIn) {
+            status = 'present';
+            statusLabel = att.remarks?.includes('Attended during approved leave') ? 'Present (Leave Override)' : 'Present';
+          } else if (s === 'half_day') {
+            status = 'half_day';
+            statusLabel = 'Half Day';
+          } else if (s === 'on_leave') {
+            status = 'on_leave';
+            statusLabel = 'On Leave';
+          } else {
+            status = 'absent';
+            statusLabel = 'Absent';
+          }
+        } else if (activeLeave) {
+          status = 'on_leave';
+          statusLabel = `On Leave (${activeLeave.leave_type_name || activeLeave.leaveTypeName || 'Leave'})`;
+        } else {
+          status = 'absent';
+          statusLabel = 'Absent';
+        }
+
+        if (status === 'present') totalPresent++;
+        else if (status === 'half_day') { totalHalfDay++; totalPresent++; }
+        else if (status === 'on_leave') totalOnLeave++;
+        else totalAbsent++;
+
+        const tasksDone = [];
+        const userReport = dayReports.find(r => String(r.employee_id || r.userId) === String(u.id));
+        if (userReport) {
+          if (Array.isArray(userReport.tasks_worked_on) && userReport.tasks_worked_on.length > 0) {
+            tasksDone.push(...userReport.tasks_worked_on);
+          } else if (Array.isArray(userReport.tasksWorkedOn) && userReport.tasksWorkedOn.length > 0) {
+            tasksDone.push(...userReport.tasksWorkedOn);
+          }
+          if (userReport.work_completed || userReport.workCompleted) {
+            tasksDone.push((userReport.work_completed || userReport.workCompleted).trim());
+          }
+        }
+
+        const userTasks = allTasks.filter(t => 
+          String(t.assigned_to || t.assignedTo || t.created_by || t.createdBy) === String(u.id) &&
+          ((t.updated_at && t.updated_at.slice(0, 10) === targetDate) || (t.created_at && t.created_at.slice(0, 10) === targetDate))
+        );
+        userTasks.forEach(t => {
+          const taskStr = `[${t.status === 'completed' ? 'Completed' : 'In Progress'}] ${t.title || 'Task'}`;
+          if (!tasksDone.some(existing => existing.includes(t.title))) {
+            tasksDone.push(taskStr);
+          }
+        });
+
+        let leaveDetails = 'None';
+        if (leaveAppliedToday.length > 0) {
+          leaveDetails = leaveAppliedToday.map(l => 
+            `Applied: ${l.leave_type_name || l.leaveTypeName || 'Leave'} (${l.from_date || l.fromDate} to ${l.to_date || l.toDate}) [${(l.status || '').toUpperCase()}]: ${l.reason || 'No reason'}`
+          ).join('; ');
+        } else if (activeLeave) {
+          leaveDetails = `Active Leave: ${activeLeave.leave_type_name || activeLeave.leaveTypeName || 'Leave'} (${activeLeave.from_date || activeLeave.fromDate} to ${activeLeave.to_date || activeLeave.toDate}) [APPROVED]: ${activeLeave.reason || 'No reason'}`;
+        }
+
+        return {
+          userId: u.id,
+          name: u.name || 'Unnamed',
+          email: u.email || '',
+          role: u.role || 'Staff',
+          department: u.department || 'IEAC Team',
+          status,
+          statusLabel,
+          checkIn: att?.check_in || att?.checkIn || null,
+          checkOut: att?.check_out || att?.checkOut || null,
+          workingHours: att?.working_hours != null ? Number(att.working_hours) : (att?.workingHours != null ? Number(att.workingHours) : (status === 'present' ? 8 : 0)),
+          tasksDoneToday: tasksDone.length > 0 ? tasksDone : ['No tasks logged for today'],
+          leaveApplied: leaveDetails,
+          remarks: att?.remarks || (status === 'absent' ? 'No check-in registered for the day' : '')
+        };
+      });
+
       return jsonResponse({
         date: targetDate,
-        total: (users || []).length,
-        availableCount: availableStaff.length,
-        onLeaveCount: onLeaveEmpIds.length,
-        available: snakeToCamel(availableStaff)
+        summary: {
+          totalEmployees: allUsers.length,
+          totalPresent,
+          totalAbsent,
+          totalOnLeave,
+          totalHalfDay
+        },
+        employees
+      });
+    }
+
+    // 11.8 Availability for date
+    if (path === '/api/availability') {
+      const targetDate = query.date || new Date().toISOString().split('T')[0];
+      const targetObj = new Date(targetDate);
+      const isSunday = targetObj.getDay() === 0;
+
+      const { data: usersRaw } = await supabase.from('users').select('*');
+      const { data: leavesRaw } = await supabase.from('leave_requests').select('*').eq('status', 'approved');
+      const { data: attRaw } = await supabase.from('attendance').select('*').eq('date', targetDate);
+      const { data: holRaw } = await supabase.from('holidays').select('*').eq('date', targetDate);
+
+      const users = snakeToCamel(usersRaw || []);
+      const leaves = snakeToCamel(leavesRaw || []);
+      const attendance = (attRaw || []).map(a => formatAttendanceRecord(a, usersRaw || []));
+      const holiday = holRaw && holRaw.length > 0 ? snakeToCamel(holRaw[0]) : null;
+
+      const leavesOnDate = leaves.filter(lr => {
+        const start = lr.startDate || lr.fromDate;
+        const end = lr.endDate || lr.toDate;
+        return start && end && targetDate >= start && targetDate <= end;
+      });
+
+      const onLeaveMap = new Map();
+      leavesOnDate.forEach(l => onLeaveMap.set(String(l.employeeId || l.userId), l));
+
+      const attMap = new Map();
+      attendance.forEach(a => attMap.set(String(a.userId), a));
+
+      const availableEmployees = [];
+      const onLeaveEmployees = [];
+
+      for (const u of users) {
+        const leave = onLeaveMap.get(String(u.id));
+        const att = attMap.get(String(u.id));
+        if (leave) {
+          onLeaveEmployees.push({
+            userId: u.id,
+            id: u.id,
+            name: u.name,
+            email: u.email,
+            role: u.role,
+            leaveTypeName: leave.leaveTypeName || 'Approved Leave',
+            reason: leave.reason,
+            fromDate: leave.startDate || leave.fromDate,
+            toDate: leave.endDate || leave.toDate,
+            presentDespiteLeave: att?.presentDespiteLeave || false,
+            leavePresentReason: att?.leavePresentReason || null
+          });
+          if (att?.presentDespiteLeave) {
+            availableEmployees.push({
+              userId: u.id,
+              id: u.id,
+              name: u.name,
+              email: u.email,
+              role: u.role,
+              phone: u.phone,
+              status: 'present_override',
+              note: `Present despite leave (${att.leavePresentReason})`
+            });
+          }
+        } else {
+          availableEmployees.push({
+            userId: u.id,
+            id: u.id,
+            name: u.name,
+            email: u.email,
+            role: u.role,
+            phone: u.phone,
+            status: att?.status || (isSunday ? 'sunday' : 'available')
+          });
+        }
+      }
+
+      return jsonResponse({
+        date: targetDate,
+        isSunday,
+        holiday,
+        total: users.length,
+        availableCount: availableEmployees.length,
+        onLeaveCount: onLeaveEmployees.length,
+        availableEmployees,
+        onLeaveEmployees,
+        available: availableEmployees
+      });
+    }
+
+    // 11.8 HR Stats Dashboard
+    if (path === '/api/hr-stats' && method === 'GET') {
+      const timeframe = query.timeframe || 'month';
+      const customStart = query.startDate;
+      const customEnd = query.endDate;
+
+      const { data: usersRaw } = await supabase.from('users').select('*');
+      const { data: attRaw } = await supabase.from('attendance').select('*');
+      const { data: leavesRaw } = await supabase.from('leave_requests').select('*');
+      const { data: tasksRaw } = await supabase.from('tasks').select('*');
+
+      const users = snakeToCamel(usersRaw || []);
+      const leaves = snakeToCamel(leavesRaw || []);
+      const tasks = snakeToCamel(tasksRaw || []);
+      const attendance = (attRaw || []).map(a => formatAttendanceRecord(a, usersRaw || []));
+
+      const today = new Date().toISOString().slice(0, 10);
+      const now = new Date();
+
+      let pStart, pEnd;
+      pEnd = customEnd ? new Date(customEnd) : new Date(today);
+      if (customStart) {
+        pStart = new Date(customStart);
+      } else if (timeframe === 'day') {
+        pStart = new Date(today);
+      } else if (timeframe === 'week') {
+        pStart = new Date(now.getTime() - 6 * 24 * 3600 * 1000);
+      } else {
+        pStart = new Date(now.getTime() - 29 * 24 * 3600 * 1000);
+      }
+
+      const periodDates = [];
+      let dIter = new Date(pStart);
+      while (dIter <= pEnd) {
+        periodDates.push(dIter.toISOString().slice(0, 10));
+        dIter.setDate(dIter.getDate() + 1);
+      }
+      const workingDaysInPeriod = Math.max(1, periodDates.filter(d => new Date(d).getDay() !== 0).length);
+
+      const todayAtt = attendance.filter(a => a.date === today);
+      const approvedLeavesToday = leaves.filter(r => r.status === 'approved' && today >= (r.startDate || r.fromDate) && today <= (r.endDate || r.toDate));
+      const onLeaveUserIds = new Set(approvedLeavesToday.map(r => String(r.employeeId || r.userId)));
+
+      const membersPresentToday = [];
+      const membersAbsentToday = [];
+      const membersOnLeaveToday = [];
+
+      users.forEach(u => {
+        const att = todayAtt.find(a => String(a.userId) === String(u.id));
+        const isLeave = onLeaveUserIds.has(String(u.id));
+
+        if (att && (att.status === 'present' || att.checkIn)) {
+          membersPresentToday.push({
+            id: u.id,
+            name: u.name,
+            role: u.role,
+            email: u.email,
+            checkIn: att.checkIn,
+            checkOut: att.checkOut,
+            workingHours: att.workingHours || 0,
+            presentDespiteLeave: att.presentDespiteLeave || false,
+            leavePresentReason: att.leavePresentReason || null
+          });
+        } else if (isLeave) {
+          const lr = approvedLeavesToday.find(r => String(r.employeeId || r.userId) === String(u.id));
+          membersOnLeaveToday.push({
+            id: u.id,
+            name: u.name,
+            role: u.role,
+            email: u.email,
+            leaveTypeName: lr?.leaveTypeName || 'Approved Leave',
+            reason: lr?.reason || ''
+          });
+        } else {
+          membersAbsentToday.push({
+            id: u.id,
+            name: u.name,
+            role: u.role,
+            email: u.email
+          });
+        }
+      });
+
+      const employeeMetrics = users.map(u => {
+        const userAtt = attendance.filter(a => String(a.userId) === String(u.id) && periodDates.includes(a.date));
+        const daysPresent = userAtt.filter(a => a.status === 'present' || a.checkIn).length;
+        const daysAbsent = Math.max(0, workingDaysInPeriod - daysPresent);
+        const attendancePercentage = Math.min(100, Math.round((daysPresent / workingDaysInPeriod) * 1000) / 10);
+
+        const userTasks = tasks.filter(t => String(t.assignedTo) === String(u.id));
+        const completedTasks = userTasks.filter(t => t.status === 'completed').length;
+        const inProgressTasks = userTasks.filter(t => t.status === 'in_progress').length;
+        const taskCompletionRate = userTasks.length > 0 ? Math.round((completedTasks / userTasks.length) * 100) : 0;
+
+        return {
+          userId: u.id,
+          name: u.name,
+          email: u.email,
+          role: u.role,
+          workingDays: workingDaysInPeriod,
+          daysPresent,
+          daysAbsent,
+          attendancePercentage,
+          totalTasks: userTasks.length,
+          completedTasks,
+          inProgressTasks,
+          taskCompletionRate,
+          dailyReportsSubmitted: 0
+        };
+      });
+
+      const tasksDoneDayWise = periodDates.map(dateStr => {
+        const dayT = tasks.filter(t => (t.createdAt && t.createdAt.slice(0, 10) === dateStr) || (t.status === 'completed' && t.updatedAt && t.updatedAt.slice(0, 10) === dateStr));
+        return {
+          date: dateStr,
+          tasksCount: dayT.length,
+          reportsCount: 0,
+          completedCount: dayT.filter(t => t.status === 'completed').length
+        };
+      });
+
+      const totalPossible = users.length * workingDaysInPeriod;
+      const totalActual = employeeMetrics.reduce((sum, e) => sum + e.daysPresent, 0);
+      const overallAttendancePercentage = totalPossible > 0 ? Math.min(100, Math.round((totalActual / totalPossible) * 1000) / 10) : 0;
+
+      return jsonResponse({
+        totalEmployees: users.length,
+        presentTodayCount: membersPresentToday.length,
+        absentTodayCount: membersAbsentToday.length,
+        onLeaveTodayCount: membersOnLeaveToday.length,
+        membersPresentToday,
+        membersAbsentToday,
+        membersOnLeaveToday,
+        employeeMetrics,
+        tasksDoneDayWise,
+        overallAttendancePercentage,
+        period: {
+          timeframe,
+          startDate: pStart.toISOString().slice(0, 10),
+          endDate: pEnd.toISOString().slice(0, 10),
+          totalWorkingDays: workingDaysInPeriod
+        },
+        activeTasks: tasks.filter(t => t.status !== 'completed').length,
+        completedTasks: tasks.filter(t => t.status === 'completed').length,
+        inProgressTasks: tasks.filter(t => t.status === 'in_progress').length,
+        taskCompletionRate: tasks.length > 0 ? Math.round((tasks.filter(t => t.status === 'completed').length / tasks.length) * 100) : 0
+      });
+    }
+
+    // 11.9 Reports endpoints
+    if (path === '/api/reports/attendance' && method === 'GET') {
+      const { data: attList, error: attErr } = await supabase.from('attendance').select('*').order('date', { ascending: false });
+      if (attErr) return errorResponse(attErr.message);
+      const { data: usersList } = await supabase.from('users').select('*');
+      return jsonResponse((attList || []).map(a => formatAttendanceRecord(a, usersList || [])));
+    }
+
+    if (path === '/api/reports/daily' && method === 'GET') {
+      return jsonResponse([]);
+    }
+
+    if (path === '/api/reports/tasks' && method === 'GET') {
+      const { data: tasks, error } = await supabase.from('tasks').select('*');
+      if (error) return errorResponse(error.message);
+      return jsonResponse(snakeToCamel(tasks || []));
+    }
+
+    if (path === '/api/reports/leaves' && method === 'GET') {
+      const { data: leaves, error } = await supabase.from('leave_requests').select('*');
+      if (error) return errorResponse(error.message);
+      const { data: usersList } = await supabase.from('users').select('*');
+      const { data: leaveTypes } = await supabase.from('leave_types').select('*');
+      const enriched = (leaves || []).map(l => {
+        const u = (usersList || []).find(x => String(x.id) === String(l.employee_id)) || {};
+        const lt = (leaveTypes || []).find(t => String(t.id) === String(l.leave_type_id)) || {};
+        return {
+          ...snakeToCamel(l),
+          employeeName: u.name || '',
+          leaveTypeName: lt.name || 'Leave'
+        };
+      });
+      return jsonResponse(enriched);
+    }
+
+    if (path === '/api/reports/hr-multi-sheet-excel' && method === 'GET') {
+      const now = new Date();
+      let endDate = query.endDate || now.toISOString().slice(0, 10);
+      let startDate = query.startDate || new Date(now.getTime() - 6 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+
+      const { data: usersRaw } = await supabase.from('users').select('*');
+      const { data: attRaw } = await supabase.from('attendance').select('*');
+      const { data: leavesRaw } = await supabase.from('leave_requests').select('*');
+      const { data: tasksRaw } = await supabase.from('tasks').select('*');
+
+      const users = snakeToCamel(usersRaw || []);
+      const attendance = (attRaw || []).map(a => formatAttendanceRecord(a, usersRaw || []));
+      const leaves = snakeToCamel(leavesRaw || []);
+      const tasks = snakeToCamel(tasksRaw || []);
+
+      const blob = await generateHRMultiSheetExcel(startDate, endDate, users, attendance, leaves, tasks);
+      return new Response(blob, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          'Content-Disposition': `attachment; filename="IITM_IEAC_HR_Report_${startDate}_${endDate}.xlsx"`
+        }
       });
     }
 

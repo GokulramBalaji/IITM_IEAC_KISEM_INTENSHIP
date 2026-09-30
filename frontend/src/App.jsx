@@ -173,6 +173,7 @@ export default function App() {
 
   const handleLoginSuccess = (user) => {
     sessionStorage.setItem("iitm_user", JSON.stringify(user))
+    sessionStorage.setItem("user", JSON.stringify(user))
     setCurrentUser(user)
     const initialView = (user.role === "trainee" || user.role === "intern") ? "learning" : "dashboard"
     setActiveView(initialView)
@@ -186,6 +187,7 @@ export default function App() {
       await fetch("/api/logout", { method: "POST" })
     } catch (_) {}
     sessionStorage.removeItem("iitm_user")
+    sessionStorage.removeItem("user")
     sessionStorage.removeItem("iitm_active_view")
     setCurrentUser(null)
     setActiveView("dashboard")
@@ -398,7 +400,11 @@ export default function App() {
       case "tasks":
         return <TaskManagementView currentUser={currentUser} />
       case "daily-reports":
-        return <DailyReportView currentUser={currentUser} />
+        return canManageHR ? (
+          <DailyReportView currentUser={currentUser} />
+        ) : (
+          <DashboardView instruments={instruments} currentUser={currentUser} setActiveView={setActiveView} />
+        )
       case "my-leaves":
         return <MyLeavesView currentUser={currentUser} />
       case "leave-approval":
@@ -443,9 +449,9 @@ export default function App() {
     // ── 1. WORK MANAGEMENT (TOP PRIORITY) ──
     { id: "__divider_work__", label: "Work Management", isDivider: true },
     { id: "tasks", label: "Task Management", icon: <CheckSquare className="w-4 h-4" /> },
-    { id: "daily-reports", label: "Daily Reports", icon: <FileText className="w-4 h-4" /> },
     { id: "attendance", label: "Attendance", icon: <UserCheck className="w-4 h-4" /> },
     ...(canManageHR ? [
+      { id: "daily-reports", label: "Daily Reports", icon: <FileText className="w-4 h-4" /> },
       { id: "hr-dashboard", label: "HR Dashboard", icon: <BarChart2 className="w-4 h-4" /> }
     ] : []),
 

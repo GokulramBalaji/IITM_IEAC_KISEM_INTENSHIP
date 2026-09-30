@@ -2463,33 +2463,71 @@ app.get('/api/attendance', authenticateToken, async (req, res) => {
     const users = await db.getUsers();
     res.json(records.map(r => {
       const u = users.find(u => String(u.id) === String(r.userId)) || {};
-      return { ...r, employeeName: u.name || '' };
+      return { ...r, employeeId: r.userId, employeeName: u.name || '' };
     }));
   } else {
     const records = await db.getAttendanceByEmployee(req.user.id);
-    res.json(records);
+    res.json(records.map(r => ({ ...r, employeeId: r.userId })));
   }
 });
 app.get('/api/attendance/today', authenticateToken, async (req, res) => {
-  const record = await db.getTodayAttendance(req.user.id);
-  res.json(record || null);
+  const today = req.query.date || new Date().toISOString().slice(0, 10);
+  const records = await db.getAttendance();
+  const record = records.find(a => String(a.userId) === String(req.user.id) && a.date === today);
+  res.json(record ? { ...record, employeeId: record.userId } : null);
 });
+
 app.post('/api/attendance/checkin', authenticateToken, async (req, res) => {
-  const today = new Date().toISOString().slice(0, 10);
-  const existing = await db.getTodayAttendance(req.user.id);
-  if (existing && existing.checkIn) return res.status(400).json({ error: 'Already checked in today.' });
-  const record = await db.upsertAttendance(req.user.id, today, { checkIn: new Date().toISOString(), status: 'present' });
-  res.json(record);
+  try {
+    const today = req.body?.date || new Date().toISOString().slice(0, 10);
+    const records = await db.getAttendance();
+    const existing = records.find(a => String(a.userId) === String(req.user.id) && a.date === today);
+    if (existing && existing.checkIn) {
+      return res.status(400).json({ error: 'Already checked in today.' });
+    }
+    const users = await db.getUsers();
+    const user = users.find(u => String(u.id) === String(req.user.id));
+    const now = new Date().toISOString();
+    const record = await db.upsertAttendance(req.user.id, today, {
+      checkIn: now,
+      status: 'present',
+      userName: user ? user.name : 'Staff Member',
+      remarks: 'Self check-in'
+    });
+    try { io.emit('attendance_updated', record); } catch (_) {}
+    res.json({ ...record, employeeId: record.userId, employeeName: user ? user.name : '' });
+  } catch (err) {
+    console.error('Check-in error:', err);
+    res.status(500).json({ error: 'Failed to record check-in: ' + err.message });
+  }
 });
+
 app.post('/api/attendance/checkout', authenticateToken, async (req, res) => {
-  const today = new Date().toISOString().slice(0, 10);
-  const existing = await db.getTodayAttendance(req.user.id);
-  if (!existing || !existing.checkIn) return res.status(400).json({ error: 'Please check in first.' });
-  if (existing.checkOut) return res.status(400).json({ error: 'Already checked out today.' });
-  const checkOut = new Date().toISOString();
-  const hours = ((new Date(checkOut) - new Date(existing.checkIn)) / 3600000).toFixed(2);
-  const record = await db.upsertAttendance(req.user.id, today, { checkOut, workingHours: parseFloat(hours) });
-  res.json(record);
+  try {
+    const today = req.body?.date || new Date().toISOString().slice(0, 10);
+    const records = await db.getAttendance();
+    const existing = records.find(a => String(a.userId) === String(req.user.id) && a.date === today);
+    if (!existing || !existing.checkIn) {
+      return res.status(400).json({ error: 'Please check in first.' });
+    }
+    if (existing.checkOut) {
+      return res.status(400).json({ error: 'Already checked out today.' });
+    }
+    const now = new Date().toISOString();
+    const diffHours = Math.max(0, Math.round(((new Date(now) - new Date(existing.checkIn)) / 3600000) * 100) / 100);
+    const users = await db.getUsers();
+    const user = users.find(u => String(u.id) === String(req.user.id));
+    const record = await db.upsertAttendance(req.user.id, today, {
+      checkOut: now,
+      workingHours: diffHours,
+      status: 'present'
+    });
+    try { io.emit('attendance_updated', record); } catch (_) {}
+    res.json({ ...record, employeeId: record.userId, employeeName: user ? user.name : '' });
+  } catch (err) {
+    console.error('Check-out error:', err);
+    res.status(500).json({ error: 'Failed to record check-out: ' + err.message });
+  }
 });
 
 // ═ HR ATTENDANCE MANUAL OVERRIDE (MARK PRESENT / ABSENT) ════════════════════
@@ -2526,8 +2564,10 @@ app.post('/api/hr/attendance/mark', authenticateToken, requireRole(['admin', 'hr
     checkIn: status === 'present' ? (checkIn || `${date}T09:00:00.000Z`) : null,
     checkOut: status === 'present' ? (checkOut || `${date}T18:00:00.000Z`) : null,
     workingHours,
-    remarks: remarks || `Manually marked ${status} by HR (${req.user.email || req.user.role})`
+    remarks: remarks || `Marked ${status} by HR (${req.user.email || req.user.role})`
   });
+
+  try { io.emit('attendance_updated', record); } catch (_) {}
 
   await auditLog(req.user.id, req.user.email, 'HR_ATTENDANCE_OVERRIDE', 'attendance', record.id || userId, {
     targetUser: targetUser.name,
@@ -2576,6 +2616,330 @@ app.post('/api/attendance/leave-present-reason', authenticateToken, async (req, 
 
   await auditLog(userId, req.user.email, 'LEAVE_OVERRIDE_PRESENT', 'attendance', record.id || userId, { reason: reason.trim() });
   res.json({ ok: true, message: 'Reason recorded and attendance marked as present.', record });
+});
+
+// ═ HR CUMULATIVE DAILY OPERATIONS & WORKFORCE REPORT ══════════════════════════
+async function buildCumulativeDailyReport(dateStr) {
+  const users = await db.getUsers();
+  const allAttendance = await db.getAttendance();
+  const allTasks = db.getTasks ? await db.getTasks() : [];
+  const allReports = db.getDailyReports ? await db.getDailyReports() : [];
+  const allLeaves = db.getLeaveRequests ? await db.getLeaveRequests() : [];
+
+  const targetDate = dateStr || new Date().toISOString().slice(0, 10);
+
+  // Filter records for this target date
+  const dayAttendance = (allAttendance || []).filter(a => a.date === targetDate);
+  const dayReports = (allReports || []).filter(r => r.date === targetDate);
+
+  let totalPresent = 0;
+  let totalAbsent = 0;
+  let totalOnLeave = 0;
+  let totalHalfDay = 0;
+
+  const employees = users.map(u => {
+    const att = dayAttendance.find(a => String(a.userId) === String(u.id));
+
+    // Check if on approved leave
+    const activeLeave = (allLeaves || []).find(l => 
+      String(l.userId) === String(u.id) &&
+      l.status === 'approved' &&
+      targetDate >= l.fromDate &&
+      targetDate <= l.toDate
+    );
+
+    // Check if leave was applied on this date
+    const leaveAppliedToday = (allLeaves || []).filter(l => 
+      String(l.userId) === String(u.id) &&
+      (l.createdAt && l.createdAt.slice(0, 10) === targetDate)
+    );
+
+    // DEFAULT RULE: If check-in is not registered for the day, considered ABSENT!
+    let status = 'absent';
+    let statusLabel = 'Absent';
+
+    if (att) {
+      const s = (att.status || '').toLowerCase();
+      if (s === 'present' || att.checkIn) {
+        status = 'present';
+        statusLabel = att.presentDespiteLeave ? 'Present (Leave Override)' : 'Present';
+      } else if (s === 'half_day') {
+        status = 'half_day';
+        statusLabel = 'Half Day';
+      } else if (s === 'on_leave') {
+        status = 'on_leave';
+        statusLabel = 'On Leave';
+      } else {
+        status = 'absent';
+        statusLabel = 'Absent';
+      }
+    } else if (activeLeave) {
+      status = 'on_leave';
+      statusLabel = `On Leave (${activeLeave.leaveTypeName || 'Leave'})`;
+    } else {
+      status = 'absent';
+      statusLabel = 'Absent';
+    }
+
+    if (status === 'present') totalPresent++;
+    else if (status === 'half_day') { totalHalfDay++; totalPresent++; }
+    else if (status === 'on_leave') totalOnLeave++;
+    else totalAbsent++;
+
+    // Tasks done today by this user:
+    const tasksDone = [];
+
+    // 1. From daily report
+    const userReport = dayReports.find(r => String(r.userId) === String(u.id));
+    if (userReport) {
+      if (Array.isArray(userReport.tasksWorkedOn) && userReport.tasksWorkedOn.length > 0) {
+        tasksDone.push(...userReport.tasksWorkedOn);
+      }
+      if (userReport.workCompleted && userReport.workCompleted.trim()) {
+        tasksDone.push(userReport.workCompleted.trim());
+      }
+    }
+
+    // 2. From tasks table updated/created today
+    const userTasks = (allTasks || []).filter(t => 
+      String(t.assignedTo || t.createdBy) === String(u.id) &&
+      ((t.updatedAt && t.updatedAt.slice(0, 10) === targetDate) || (t.createdAt && t.createdAt.slice(0, 10) === targetDate))
+    );
+    userTasks.forEach(t => {
+      const taskStr = `[${t.status === 'completed' ? 'Completed' : 'In Progress'}] ${t.title || 'Task'}`;
+      if (!tasksDone.some(existing => existing.includes(t.title))) {
+        tasksDone.push(taskStr);
+      }
+    });
+
+    // Details of leave applied today or active
+    let leaveDetails = 'None';
+    if (leaveAppliedToday.length > 0) {
+      leaveDetails = leaveAppliedToday.map(l => 
+        `Applied: ${l.leaveTypeName || 'Leave'} (${l.fromDate} to ${l.toDate}) [${l.status.toUpperCase()}]: ${l.reason || 'No reason'}`
+      ).join('; ');
+    } else if (activeLeave) {
+      leaveDetails = `Active Leave: ${activeLeave.leaveTypeName || 'Leave'} (${activeLeave.fromDate} to ${activeLeave.toDate}) [APPROVED]: ${activeLeave.reason || 'No reason'}`;
+    }
+
+    return {
+      userId: u.id,
+      name: u.name || 'Unnamed',
+      email: u.email || '',
+      role: u.role || 'Staff',
+      department: u.department || 'IEAC Team',
+      status,
+      statusLabel,
+      checkIn: att?.checkIn || null,
+      checkOut: att?.checkOut || null,
+      workingHours: att?.workingHours != null ? att.workingHours : (status === 'present' ? 8 : 0),
+      tasksDoneToday: tasksDone.length > 0 ? tasksDone : ['No tasks logged for today'],
+      leaveApplied: leaveDetails,
+      remarks: att?.remarks || (status === 'absent' ? 'No check-in registered for the day' : '')
+    };
+  });
+
+  return {
+    date: targetDate,
+    summary: {
+      totalEmployees: users.length,
+      totalPresent,
+      totalAbsent,
+      totalOnLeave,
+      totalHalfDay
+    },
+    employees
+  };
+}
+
+app.get('/api/hr/daily-cumulative-report', authenticateToken, requireRole(['admin', 'hr', 'manager']), async (req, res) => {
+  try {
+    const dateStr = req.query.date || new Date().toISOString().slice(0, 10);
+    const report = await buildCumulativeDailyReport(dateStr);
+    res.json(report);
+  } catch (err) {
+    console.error('Failed to generate cumulative daily report:', err);
+    res.status(500).json({ error: 'Failed to generate report: ' + err.message });
+  }
+});
+
+app.get('/api/hr/daily-cumulative-report/export', authenticateToken, requireRole(['admin', 'hr', 'manager']), async (req, res) => {
+  try {
+    const dateStr = req.query.date || new Date().toISOString().slice(0, 10);
+    const reportData = await buildCumulativeDailyReport(dateStr);
+
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'IIT Madras - Industrial Energy Assessment Cell (IEAC)';
+    workbook.created = new Date();
+
+    const sheet = workbook.addWorksheet('Daily Cumulative Report', {
+      pageSetup: { orientation: 'landscape', fitToWidth: 1, fitToHeight: 0 }
+    });
+
+    sheet.views = [{ showGridLines: true }];
+
+    sheet.columns = [
+      { header: 'S.No', key: 'sno', width: 8 },
+      { header: 'Employee Name', key: 'name', width: 24 },
+      { header: 'Role / Designation', key: 'role', width: 18 },
+      { header: 'Department', key: 'department', width: 18 },
+      { header: 'Attendance Status', key: 'status', width: 22 },
+      { header: 'Check-In', key: 'checkIn', width: 14 },
+      { header: 'Check-Out', key: 'checkOut', width: 14 },
+      { header: 'Hours', key: 'hours', width: 10 },
+      { header: 'Tasks Done / Work Updates Today', key: 'tasks', width: 45 },
+      { header: 'Leave Applied / Details', key: 'leave', width: 35 },
+      { header: 'HR Remarks', key: 'remarks', width: 28 }
+    ];
+
+    // Title Banner
+    sheet.insertRow(1, ['IIT MADRAS — INDUSTRIAL ENERGY ASSESSMENT CELL (IEAC)']);
+    sheet.mergeCells('A1:K1');
+    const titleRow = sheet.getRow(1);
+    titleRow.height = 32;
+    titleRow.getCell(1).font = { name: 'Arial', size: 14, bold: true, color: { argb: 'FFFFFF' } };
+    titleRow.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '0F172A' } };
+    titleRow.getCell(1).alignment = { vertical: 'middle', horizontal: 'center' };
+
+    // Subtitle with Date
+    sheet.insertRow(2, [`DAILY WORKFORCE & OPERATIONS CUMULATIVE REPORT — ${reportData.date}`]);
+    sheet.mergeCells('A2:K2');
+    const subRow = sheet.getRow(2);
+    subRow.height = 24;
+    subRow.getCell(1).font = { name: 'Arial', size: 11, bold: true, color: { argb: 'FFFFFF' } };
+    subRow.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '1E3A8A' } };
+    subRow.getCell(1).alignment = { vertical: 'middle', horizontal: 'center' };
+
+    // KPI Summary Bar
+    const sum = reportData.summary;
+    sheet.insertRow(3, [
+      `Total Workforce: ${sum.totalEmployees}`,
+      '',
+      `Total Present: ${sum.totalPresent}`,
+      '',
+      `Total Absent: ${sum.totalAbsent}`,
+      '',
+      `On Leave: ${sum.totalOnLeave}`,
+      '',
+      `Half-Day: ${sum.totalHalfDay}`,
+      '',
+      `Generated: ${new Date().toLocaleTimeString()}`
+    ]);
+    sheet.mergeCells('A3:B3');
+    sheet.mergeCells('C3:D3');
+    sheet.mergeCells('E3:F3');
+    sheet.mergeCells('G3:H3');
+    sheet.mergeCells('I3:J3');
+    const kpiRow = sheet.getRow(3);
+    kpiRow.height = 24;
+    for (let c = 1; c <= 11; c++) {
+      const cell = kpiRow.getCell(c);
+      cell.font = { name: 'Arial', size: 10, bold: true, color: { argb: '0F172A' } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F1F5F9' } };
+      cell.alignment = { vertical: 'middle', horizontal: 'center' };
+    }
+
+    // Blank row separator
+    sheet.insertRow(4, []);
+    sheet.getRow(4).height = 10;
+
+    // Header row is row 5
+    const headerRow = sheet.getRow(5);
+    headerRow.height = 26;
+    for (let c = 1; c <= 11; c++) {
+      const cell = headerRow.getCell(c);
+      cell.font = { name: 'Arial', size: 10, bold: true, color: { argb: 'FFFFFF' } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '1E3A8A' } };
+      cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      cell.border = {
+        top: { style: 'thin', color: { argb: '94A3B8' } },
+        bottom: { style: 'medium', color: { argb: '0F172A' } },
+        left: { style: 'thin', color: { argb: '94A3B8' } },
+        right: { style: 'thin', color: { argb: '94A3B8' } }
+      };
+    }
+
+    // Populate Employee Rows
+    let rIdx = 6;
+    reportData.employees.forEach((emp, i) => {
+      const tasksFormatted = emp.tasksDoneToday.map((t, idx) => `${idx + 1}. ${t}`).join('\n');
+      const checkInStr = emp.checkIn ? new Date(emp.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—';
+      const checkOutStr = emp.checkOut ? new Date(emp.checkOut).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : (emp.status === 'present' ? 'Active' : '—');
+
+      const row = sheet.getRow(rIdx);
+      row.values = [
+        i + 1,
+        emp.name,
+        emp.role,
+        emp.department,
+        emp.statusLabel,
+        checkInStr,
+        checkOutStr,
+        emp.workingHours ? `${emp.workingHours}h` : '0h',
+        tasksFormatted,
+        emp.leaveApplied,
+        emp.remarks
+      ];
+
+      row.alignment = { vertical: 'top', wrapText: true };
+
+      const isEven = i % 2 === 0;
+      const bgColor = isEven ? 'FFFFFF' : 'F8FAFC';
+
+      let statusFg = '000000';
+      let statusBg = bgColor;
+      if (emp.status === 'present') {
+        statusBg = 'DCFCE7';
+        statusFg = '166534';
+      } else if (emp.status === 'absent') {
+        statusBg = 'FEE2E2';
+        statusFg = '991B1B';
+      } else if (emp.status === 'on_leave') {
+        statusBg = 'DBEAFE';
+        statusFg = '1E40AF';
+      } else if (emp.status === 'half_day') {
+        statusBg = 'FEF3C7';
+        statusFg = '92400E';
+      }
+
+      for (let c = 1; c <= 11; c++) {
+        const cell = row.getCell(c);
+        cell.font = { name: 'Arial', size: 9 };
+        cell.border = {
+          top: { style: 'thin', color: { argb: 'E2E8F0' } },
+          bottom: { style: 'thin', color: { argb: 'E2E8F0' } },
+          left: { style: 'thin', color: { argb: 'E2E8F0' } },
+          right: { style: 'thin', color: { argb: 'E2E8F0' } }
+        };
+
+        if (c === 5) {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: statusBg } };
+          cell.font = { name: 'Arial', size: 9, bold: true, color: { argb: statusFg } };
+          cell.alignment = { vertical: 'middle', horizontal: 'center' };
+        } else if (c === 1 || c === 6 || c === 7 || c === 8) {
+          cell.alignment = { vertical: 'middle', horizontal: 'center' };
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColor } };
+        } else {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColor } };
+        }
+      }
+
+      rIdx++;
+    });
+
+    const fileName = `IITM_IEAC_Daily_Cumulative_Report_${reportData.date}.xlsx`;
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error('Failed to export cumulative report:', err);
+    res.status(500).json({ error: 'Failed to export report: ' + err.message });
+  }
 });
 
 // ═ DYNAMIC TEAM AVAILABILITY FOR LEAVE CALENDAR ═════════════════════════════

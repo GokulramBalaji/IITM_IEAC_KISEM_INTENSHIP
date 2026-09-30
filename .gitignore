@@ -31,6 +31,8 @@ scratch/
 
 # Temporary and export artifacts
 *.xlsx
+*.xls
+*.csv
 public/booking-*.xlsx
 public/booking-bulk-*.xlsx
 public/booking-extract-*.xlsx

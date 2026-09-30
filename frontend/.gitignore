@@ -21,6 +21,8 @@ dist-ssr
 *.ntvs*
 *.njsproj
 *.sln
-*.sw?
 .env
 .env.*
+*.xlsx
+*.xls
+*.csv
