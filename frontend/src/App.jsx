@@ -693,7 +693,7 @@ export default function App() {
 
         {/* View content panel */}
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 bg-background/50">
-          <div className="max-w-6xl mx-auto">
+          <div className="max-w-[1440px] w-full mx-auto">
             {renderCurrentView()}
           </div>
         </main>

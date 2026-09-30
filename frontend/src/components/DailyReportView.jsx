@@ -763,17 +763,17 @@ export default function DailyReportView({ currentUser }) {
               <p className="text-xs text-muted-foreground mt-1">Try clearing your search query or selecting a different status filter.</p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto w-full">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-xs text-muted-foreground bg-muted/20">
-                    <th className="text-left py-3 px-4 font-semibold w-12">#</th>
-                    <th className="text-left py-3 px-4 font-semibold min-w-[200px]">Employee</th>
-                    <th className="text-left py-3 px-4 font-semibold min-w-[140px]">Attendance Status</th>
-                    <th className="text-left py-3 px-4 font-semibold min-w-[170px]">Check-In / Out</th>
-                    <th className="text-left py-3 px-4 font-semibold min-w-[260px]">Tasks Done Today</th>
-                    <th className="text-left py-3 px-4 font-semibold min-w-[200px]">Leave Applied / Status</th>
-                    <th className="text-right py-3 px-4 font-semibold min-w-[180px]">HR Attendance Control</th>
+                    <th className="text-center py-3 px-3 font-semibold w-12 shrink-0">#</th>
+                    <th className="text-left py-3 px-3 font-semibold min-w-[190px]">Employee</th>
+                    <th className="text-center py-3 px-3 font-semibold min-w-[130px]">Status</th>
+                    <th className="text-left py-3 px-3 font-semibold min-w-[150px]">Check-In / Out</th>
+                    <th className="text-left py-3 px-3 font-semibold min-w-[220px]">Tasks Done Today</th>
+                    <th className="text-left py-3 px-3 font-semibold min-w-[170px]">Leave Applied / Status</th>
+                    <th className="text-center py-3 px-4 font-semibold min-w-[220px]">HR Attendance Control</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
@@ -786,10 +786,10 @@ export default function DailyReportView({ currentUser }) {
 
                     return (
                       <tr key={emp.userId || index} className="hover:bg-muted/30 transition-colors">
-                        <td className="py-3 px-4 text-xs text-muted-foreground font-mono">
+                        <td className="py-3 px-3 text-center text-xs text-muted-foreground font-mono">
                           {index + 1}
                         </td>
-                        <td className="py-3 px-4">
+                        <td className="py-3 px-3">
                           <div className="flex items-center gap-2.5">
                             <div className="w-8 h-8 rounded-full bg-primary/10 text-primary font-bold text-xs flex items-center justify-center shrink-0">
                               {(emp.name || "?").charAt(0).toUpperCase()}
@@ -806,7 +806,7 @@ export default function DailyReportView({ currentUser }) {
                             </div>
                           </div>
                         </td>
-                        <td className="py-3 px-4">
+                        <td className="py-3 px-3 text-center">
                           <span className={`inline-flex items-center text-[10px] font-semibold px-2.5 py-1 rounded-full border ${
                             isPresent ? "bg-green-50 text-green-700 border-green-200" :
                             isOD ? "bg-indigo-50 text-indigo-700 border-indigo-200 font-bold" :
@@ -822,7 +822,7 @@ export default function DailyReportView({ currentUser }) {
                             {emp.statusLabel}
                           </span>
                         </td>
-                        <td className="py-3 px-4">
+                        <td className="py-3 px-3">
                           <div className="space-y-0.5">
                             <p className="text-xs font-mono text-foreground font-medium">
                               In: <span className="text-emerald-700 font-semibold">{formatTime(emp.checkIn)}</span>
@@ -834,8 +834,8 @@ export default function DailyReportView({ currentUser }) {
                             </p>
                           </div>
                         </td>
-                        <td className="py-3 px-4">
-                          <div className="space-y-1 max-w-[340px]">
+                        <td className="py-3 px-3">
+                          <div className="space-y-1 max-w-[320px]">
                             {emp.tasksDoneToday.map((t, tIdx) => (
                               <div key={tIdx} className="text-xs flex items-start gap-1.5 leading-relaxed">
                                 <span className="text-primary font-bold shrink-0">•</span>
@@ -844,7 +844,7 @@ export default function DailyReportView({ currentUser }) {
                             ))}
                           </div>
                         </td>
-                        <td className="py-3 px-4 text-xs">
+                        <td className="py-3 px-3 text-xs">
                           {emp.leaveApplied && emp.leaveApplied !== "None" ? (
                             <div className="bg-blue-50/70 border border-blue-200 rounded-md p-2 text-[11px] text-blue-900 leading-snug">
                               {emp.leaveApplied}
@@ -853,20 +853,20 @@ export default function DailyReportView({ currentUser }) {
                             <span className="text-muted-foreground text-xs">None</span>
                           )}
                         </td>
-                        <td className="py-3 px-4 text-right">
+                        <td className="py-3 px-4 text-center">
                           {isAbsent ? (
-                            <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                            <div className="flex items-center justify-center gap-1.5 whitespace-nowrap">
                               <Button
                                 size="sm"
                                 onClick={() => quickChangeToPresent(emp)}
-                                className="h-7 text-xs bg-green-600 hover:bg-green-700 text-white font-medium shadow-xs"
+                                className="h-7 px-2.5 text-xs bg-green-600 hover:bg-green-700 text-white font-medium shadow-xs cursor-pointer"
                               >
                                 <UserCheck className="w-3 h-3 mr-1" /> Present
                               </Button>
                               <Button
                                 size="sm"
                                 onClick={() => quickChangeToOD(emp)}
-                                className="h-7 text-xs bg-indigo-600 hover:bg-indigo-700 text-white font-medium shadow-xs"
+                                className="h-7 px-2 text-xs bg-indigo-600 hover:bg-indigo-700 text-white font-medium shadow-xs cursor-pointer"
                                 title="Mark On Duty (OD) - Active workforce, not absent"
                               >
                                 <Briefcase className="w-3 h-3 mr-1" /> OD
@@ -875,26 +875,26 @@ export default function DailyReportView({ currentUser }) {
                                 size="sm"
                                 variant="outline"
                                 onClick={() => handleOpenModal(emp, "present")}
-                                className="h-7 text-xs text-muted-foreground hover:text-foreground"
+                                className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground cursor-pointer"
                               >
                                 Edit
                               </Button>
                             </div>
                           ) : (
-                            <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                            <div className="flex items-center justify-center gap-1.5 whitespace-nowrap">
                               <Button
                                 size="sm"
                                 variant="outline"
                                 onClick={() => handleOpenModal(emp, emp.status || "present")}
-                                className="h-7 text-xs border-primary/30 text-primary hover:bg-primary/5 font-medium"
+                                className="h-7 px-2.5 text-xs border-primary/30 text-primary hover:bg-primary/5 font-medium cursor-pointer"
                               >
-                                Edit Attendance
+                                Edit
                               </Button>
                               <Button
                                 size="sm"
                                 variant="outline"
                                 onClick={() => handleOpenModal(emp, "absent")}
-                                className="h-7 text-xs border-red-200 text-red-700 hover:bg-red-50"
+                                className="h-7 px-2.5 text-xs border-red-200 text-red-700 hover:bg-red-50 cursor-pointer"
                               >
                                 <UserX className="w-3 h-3 mr-1" /> Mark Absent
                               </Button>
