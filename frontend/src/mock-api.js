@@ -610,10 +610,29 @@ window.fetch = async function (url, options = {}) {
     return jsonResponse({ error: msg }, status);
   };
 
-  // Auth Guard checking
+  // Auth Guard & 10-Minute Active Session Expiration
   const isAuthRequired = path !== '/api/login' && path !== '/api/logout';
-  if (isAuthRequired && !user) {
-    return errorResponse('Authentication required.', 401);
+  if (isAuthRequired) {
+    if (!user) {
+      return errorResponse('Authentication required.', 401);
+    }
+
+    const sessionStart = Number(sessionStorage.getItem('iitm_session_start') || 0);
+    const lastActive = Number(sessionStorage.getItem('iitm_last_active') || 0);
+    const now = Date.now();
+    const TEN_MINUTES_MS = 10 * 60 * 1000; // 10 minutes
+
+    if (sessionStart > 0 && (now - sessionStart >= TEN_MINUTES_MS || (lastActive > 0 && now - lastActive >= TEN_MINUTES_MS))) {
+      sessionStorage.removeItem('iitm_user');
+      sessionStorage.removeItem('user');
+      sessionStorage.removeItem('iitm_active_view');
+      sessionStorage.removeItem('iitm_session_start');
+      sessionStorage.removeItem('iitm_last_active');
+      sessionStorage.setItem('iitm_session_expired_message', 'Your session has expired after 10 minutes. Please log in again.');
+      return errorResponse('Your session has expired after 10 minutes. Please log in again.', 401);
+    }
+
+    sessionStorage.setItem('iitm_last_active', String(now));
   }
 
   const requireAdmin = () => {
@@ -716,40 +735,58 @@ window.fetch = async function (url, options = {}) {
     // --- 1. AUTHENTICATION & LOGIN ---
     if (path === '/api/login' && method === 'POST') {
       const { email, password } = body;
-      const trimmedEmail = (email || '').trim();
+      const trimmedEmail = (email || '').trim().toLowerCase();
+      if (!trimmedEmail || !password) {
+        return errorResponse('Mail ID and password are required.', 400);
+      }
       const finalEmail = trimmedEmail.includes('@') ? trimmedEmail : `${trimmedEmail}@iitm.com`;
 
+      // 1. Strictly verify if this email is registered in public.users
+      const { data: allUsers, error: usersErr } = await supabase.from('users').select('*');
+      if (usersErr) {
+        console.error('Supabase users query error:', usersErr);
+      }
+
+      const registeredUser = (allUsers || []).find(u => {
+        const uEmail = String(u.email || '').toLowerCase().trim();
+        return uEmail === trimmedEmail ||
+               uEmail === finalEmail ||
+               (trimmedEmail.includes('@') && uEmail === trimmedEmail.split('@')[0]) ||
+               (!trimmedEmail.includes('@') && uEmail.split('@')[0] === trimmedEmail) ||
+               uEmail === `${trimmedEmail}@iitm.com` ||
+               `${uEmail}@iitm.com` === trimmedEmail;
+      });
+
+      if (!registeredUser) {
+        return errorResponse('This Mail ID is not registered in the system. Access denied.', 401);
+      }
+
+      // 2. Perform authentication with Supabase Auth for this registered user
+      const attemptEmail = registeredUser.email && registeredUser.email.includes('@')
+        ? registeredUser.email
+        : finalEmail;
+
       let { data: authData, error: authErr } = await supabase.auth.signInWithPassword({
-        email: finalEmail,
+        email: attemptEmail,
         password
       });
 
-      // If user is not yet created in Supabase Auth (e.g. fresh database setup), auto-provision
-      if (authErr && (authErr.message?.includes('Invalid login credentials') || authErr.message?.includes('User not found') || authErr.status === 400)) {
-        const isAdminUser = finalEmail.startsWith('admin') || finalEmail.includes('admin');
-        const role = isAdminUser ? 'admin' : 'engineer';
-        const name = isAdminUser ? 'Admin User' : (trimmedEmail.split('@')[0] || 'Staff User');
-
-        // Auto-provision user in auth.users
-        const { data: signUpData, error: signUpErr } = await supabase.auth.signUp({
+      if (authErr && attemptEmail !== finalEmail) {
+        const secondAttempt = await supabase.auth.signInWithPassword({
           email: finalEmail,
-          password: password,
-          options: {
-            data: { name, role }
-          }
+          password
         });
-
-        if (!signUpErr && signUpData?.user) {
-          authData = signUpData;
+        if (!secondAttempt.error) {
+          authData = secondAttempt.data;
           authErr = null;
         }
       }
 
       if (authErr) {
-        return errorResponse(authErr.message || 'Invalid credentials.', 401);
+        return errorResponse('Invalid password for this Mail ID. Please verify your credentials.', 401);
       }
 
-      // Fetch user profile from public.users table
+      // Fetch user profile from public.users table by id or fallback to registeredUser
       let { data: profile } = await supabase
         .from('users')
         .select('*')
@@ -757,39 +794,38 @@ window.fetch = async function (url, options = {}) {
         .maybeSingle();
 
       if (!profile) {
-        const isAdminUser = finalEmail.startsWith('admin') || finalEmail.includes('admin');
-        const role = isAdminUser ? 'admin' : 'engineer';
-        const name = isAdminUser ? 'Admin User' : (trimmedEmail.split('@')[0] || 'Staff User');
-        const { data: newProfile } = await supabase
-          .from('users')
-          .insert({
-            id: authData.user.id,
-            name,
-            email: finalEmail,
-            phone: '',
-            role
-          })
-          .select()
-          .maybeSingle();
-        profile = newProfile;
+        profile = registeredUser;
       }
 
+      const role = (profile ? profile.role : (authData.user.user_metadata?.role || registeredUser.role || 'engineer')).toLowerCase();
+      const now = Date.now();
+
       const sessionUser = {
-        id: authData.user.id,
-        name: profile ? profile.name : (authData.user.user_metadata?.name || email),
-        email: finalEmail,
+        id: profile ? profile.id : authData.user.id,
+        name: profile ? profile.name : (authData.user.user_metadata?.name || registeredUser.name || trimmedEmail),
+        email: profile?.email || finalEmail,
         phone: profile ? profile.phone : (authData.user.user_metadata?.phone || ''),
-        role: (profile ? profile.role : (authData.user.user_metadata?.role || 'admin')).toLowerCase()
+        role: role
       };
 
       sessionStorage.setItem('iitm_user', JSON.stringify(sessionUser));
-      return jsonResponse(sessionUser);
+      sessionStorage.setItem('user', JSON.stringify(sessionUser));
+      sessionStorage.setItem('iitm_session_start', String(now));
+      sessionStorage.setItem('iitm_last_active', String(now));
+      sessionStorage.removeItem('iitm_session_expired_message');
+
+      return jsonResponse({ ...sessionUser, sessionExpiresIn: 10 * 60 });
     }
 
     if (path === '/api/logout' && method === 'POST') {
-      await supabase.auth.signOut();
+      try {
+        await supabase.auth.signOut();
+      } catch (_) {}
       sessionStorage.removeItem('iitm_user');
+      sessionStorage.removeItem('user');
       sessionStorage.removeItem('iitm_active_view');
+      sessionStorage.removeItem('iitm_session_start');
+      sessionStorage.removeItem('iitm_last_active');
       return jsonResponse({ ok: true });
     }
 

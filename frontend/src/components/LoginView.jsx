@@ -3,18 +3,27 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter }
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
-import { ShieldAlert, KeyRound, Mail, Sparkles, Eye, EyeOff } from "lucide-react"
+import { ShieldAlert, KeyRound, Mail, Sparkles, Eye, EyeOff, Clock } from "lucide-react"
 
 export default function LoginView({ onLoginSuccess }) {
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [error, setError] = useState("")
+  const [sessionExpiredMsg, setSessionExpiredMsg] = useState(() => {
+    const msg = sessionStorage.getItem("iitm_session_expired_message")
+    if (msg) {
+      sessionStorage.removeItem("iitm_session_expired_message")
+      return msg
+    }
+    return ""
+  })
   const [loading, setLoading] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     setError("")
+    setSessionExpiredMsg("")
     setLoading(true)
 
     try {
@@ -23,7 +32,7 @@ export default function LoginView({ onLoginSuccess }) {
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({ email, password })
+        body: JSON.stringify({ email: email.trim(), password })
       })
 
       const data = await res.json()
@@ -68,6 +77,13 @@ export default function LoginView({ onLoginSuccess }) {
 
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
+            {sessionExpiredMsg && (
+              <div className="p-3 text-xs font-medium text-amber-800 dark:text-amber-200 bg-amber-500/15 border border-amber-500/30 rounded-lg flex items-center gap-2">
+                <Clock className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                <span>{sessionExpiredMsg}</span>
+              </div>
+            )}
+
             {error && (
               <div className="p-3 text-xs font-semibold text-destructive bg-destructive/15 rounded-lg flex items-center gap-2 animate-shake">
                 <ShieldAlert className="w-4 h-4 shrink-0 text-destructive" />

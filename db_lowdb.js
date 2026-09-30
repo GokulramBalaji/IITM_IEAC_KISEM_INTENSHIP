@@ -457,7 +457,16 @@ async function insertUser(u) {
 
 async function getUserByEmail(email) {
   const users = await getUsers();
-  return users.find(u => String(u.email).toLowerCase() === String(email).toLowerCase());
+  const search = String(email || '').toLowerCase().trim();
+  if (!search) return null;
+  return users.find(u => {
+    const uEmail = String(u.email || '').toLowerCase().trim();
+    return uEmail === search ||
+           (search.includes('@') && uEmail === search.split('@')[0]) ||
+           (!search.includes('@') && uEmail.split('@')[0] === search) ||
+           uEmail === `${search}@iitm.com` ||
+           `${uEmail}@iitm.com` === search;
+  });
 }
 
 async function getBookingById(id) {

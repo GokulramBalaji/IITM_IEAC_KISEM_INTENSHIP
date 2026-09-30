@@ -182,7 +182,7 @@ const authenticateToken = async (req, res, next) => {
     next();
   } catch (err) {
     res.clearCookie('token');
-    return res.status(403).json({ error: 'Session expired or invalid token. Please log in again.' });
+    return res.status(401).json({ error: 'Session expired after 10 minutes. Please log in again.' });
   }
 };
 
@@ -522,32 +522,32 @@ app.get('/api/users', authenticateToken, async (req, res) => {
 
 app.post('/api/login', loginRateLimiter, async (req, res) => {
   const { email, password } = req.body;
-  const trimmedEmail = (email || '').trim();
+  const trimmedEmail = (email || '').trim().toLowerCase();
   if (!email || !password) {
     return res.status(400).json({ error: 'Mail ID and password are required.' });
   }
   const user = await db.getUserByEmail(trimmedEmail);
   if (!user) {
-    return res.status(401).json({ error: 'Invalid Mail ID or password.' });
+    return res.status(401).json({ error: 'This Mail ID is not registered in the system. Access denied.' });
   }
   const isValid = await bcrypt.compare(password, user.password);
   if (!isValid) {
-    return res.status(401).json({ error: 'Invalid Mail ID or password.' });
+    return res.status(401).json({ error: 'Invalid password for this Mail ID. Please verify your credentials.' });
   }
   const { password: _, ...userInfo } = user;
   const role = (userInfo.role || 'engineer').toLowerCase();
   
   const tokenPayload = { id: userInfo.id, email: userInfo.email, role };
-  const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '8h' });
+  const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '10m' }); // 10 minute active session limit
 
   res.cookie('token', token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
-    maxAge: 8 * 3600 * 1000 // 8 hours
+    maxAge: 10 * 60 * 1000 // 10 minutes session
   });
 
-  res.json({ ...userInfo, role });
+  res.json({ ...userInfo, role, token, sessionExpiresIn: 10 * 60 });
 });
 
 app.post('/api/logout', (req, res) => {

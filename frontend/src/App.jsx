@@ -174,6 +174,10 @@ export default function App() {
   const handleLoginSuccess = (user) => {
     sessionStorage.setItem("iitm_user", JSON.stringify(user))
     sessionStorage.setItem("user", JSON.stringify(user))
+    const now = Date.now()
+    sessionStorage.setItem("iitm_session_start", String(now))
+    sessionStorage.setItem("iitm_last_active", String(now))
+    sessionStorage.removeItem("iitm_session_expired_message")
     setCurrentUser(user)
     const initialView = (user.role === "trainee" || user.role === "intern") ? "learning" : "dashboard"
     setActiveView(initialView)
@@ -182,17 +186,68 @@ export default function App() {
     window.location.href = "/" // Clean reload to clear lag
   }
 
-  const handleLogout = async () => {
+  const handleLogout = async (expiredMsg = null) => {
     try {
       await fetch("/api/logout", { method: "POST" })
     } catch (_) {}
     sessionStorage.removeItem("iitm_user")
     sessionStorage.removeItem("user")
     sessionStorage.removeItem("iitm_active_view")
+    sessionStorage.removeItem("iitm_session_start")
+    sessionStorage.removeItem("iitm_last_active")
+    if (expiredMsg) {
+      sessionStorage.setItem("iitm_session_expired_message", expiredMsg)
+    }
     setCurrentUser(null)
     setActiveView("dashboard")
     window.location.href = "/" // Clean reload to clear lag
   }
+
+  // 10-Minute Active Session Auto-Logout Watchdog
+  useEffect(() => {
+    if (!currentUser) return
+
+    const TEN_MINUTES_MS = 10 * 60 * 1000 // 10 minutes limit
+
+    // Initialize timestamps if not already present
+    if (!sessionStorage.getItem("iitm_session_start")) {
+      sessionStorage.setItem("iitm_session_start", String(Date.now()))
+    }
+    if (!sessionStorage.getItem("iitm_last_active")) {
+      sessionStorage.setItem("iitm_last_active", String(Date.now()))
+    }
+
+    // Track user activity to update last_active
+    let lastRecordedActivity = Date.now()
+    const handleUserActivity = () => {
+      const now = Date.now()
+      if (now - lastRecordedActivity > 1000) {
+        lastRecordedActivity = now
+        sessionStorage.setItem("iitm_last_active", String(now))
+      }
+    }
+
+    const activityEvents = ["mousedown", "mousemove", "keydown", "scroll", "touchstart", "click"]
+    activityEvents.forEach(evt => window.addEventListener(evt, handleUserActivity, { passive: true }))
+
+    // Periodically verify session duration and inactivity
+    const intervalId = setInterval(() => {
+      const now = Date.now()
+      const sessionStart = Number(sessionStorage.getItem("iitm_session_start") || 0)
+      const lastActive = Number(sessionStorage.getItem("iitm_last_active") || 0)
+
+      if ((sessionStart > 0 && now - sessionStart >= TEN_MINUTES_MS) ||
+          (lastActive > 0 && now - lastActive >= TEN_MINUTES_MS)) {
+        clearInterval(intervalId)
+        handleLogout("Your session has timed out after 10 minutes. Please log in again to continue.")
+      }
+    }, 3000)
+
+    return () => {
+      clearInterval(intervalId)
+      activityEvents.forEach(evt => window.removeEventListener(evt, handleUserActivity))
+    }
+  }, [currentUser])
 
   // Load instruments & users
   const loadInstruments = async () => {
@@ -202,10 +257,7 @@ export default function App() {
         const data = await res.json()
         setInstruments(data)
       } else if (res.status === 401 || res.status === 403) {
-        // Session expired or stale sessionStorage — force re-login
-        sessionStorage.removeItem("iitm_user")
-        sessionStorage.removeItem("iitm_active_view")
-        setCurrentUser(null)
+        handleLogout("Your session has expired. Please log in again.")
       }
     } catch (err) {
       console.error("Failed to load instruments", err)
@@ -219,9 +271,7 @@ export default function App() {
         const data = await res.json()
         setUsers(data)
       } else if (res.status === 401 || res.status === 403) {
-        sessionStorage.removeItem("iitm_user")
-        sessionStorage.removeItem("iitm_active_view")
-        setCurrentUser(null)
+        handleLogout("Your session has expired. Please log in again.")
       }
     } catch (err) {
       console.error("Failed to load users", err)
