@@ -193,8 +193,10 @@ const ROLE_HIERARCHY = {
   engineer: 2,
   auditor: 3,
   hr: 4,
+  manager: 4,
   admin: 5
 };
+
 
 const hasMinRole = (userRole, minRole) => {
   const userLevel = ROLE_HIERARCHY[(userRole || '').toLowerCase()] || 0;
@@ -2070,7 +2072,7 @@ app.post('/api/tasks', authenticateToken, requireRole(['admin', 'hr', 'auditor',
   const myRole = (req.user.role || 'intern').toLowerCase();
   const myLevel = ROLE_HIERARCHY[myRole] || 1;
 
-  const { title, description, assignedTo, priority = 'medium', dueDate, estimatedHours, category, project, department, tags } = req.body;
+  const { title, description = '', assignedTo, priority = 'medium', dueDate, estimatedHours = 0, category, project = '', department, tags } = req.body;
   if (!title) return res.status(400).json({ error: 'Task title is required.' });
 
   const targetAssigneeId = assignedTo || req.user.id;

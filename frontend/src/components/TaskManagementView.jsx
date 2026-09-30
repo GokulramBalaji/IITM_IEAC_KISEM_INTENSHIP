@@ -365,13 +365,9 @@ function CreateTaskModal({ onClose, onCreated, currentUser, users }) {
 
   const [form, setForm] = useState({
     title: "",
-    description: "",
     assignedTo: currentUser?.id || "",
     priority: "medium",
     dueDate: "",
-    estimatedHours: "",
-    project: "",
-    department: "",
     category: ""
   })
   const [saving, setSaving] = useState(false)
@@ -400,10 +396,11 @@ function CreateTaskModal({ onClose, onCreated, currentUser, users }) {
     setSaving(true); setError("")
     try {
       const payload = {
-        ...form,
+        title: form.title.trim(),
         assignedTo: form.assignedTo || currentUser?.id,
+        priority: form.priority,
         dueDate: form.dueDate ? form.dueDate : undefined,
-        estimatedHours: form.estimatedHours ? Number(form.estimatedHours) : undefined
+        category: form.category || undefined
       }
 
       const res = await fetch("/api/tasks", {
@@ -421,88 +418,103 @@ function CreateTaskModal({ onClose, onCreated, currentUser, users }) {
     <Dialog open onOpenChange={onClose}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2"><Plus className="w-4 h-4" />Create New Task</DialogTitle>
+          <DialogTitle className="flex items-center gap-2">
+            <Plus className="w-4 h-4 text-primary" /> Create & Assign Task
+          </DialogTitle>
           <DialogDescription className="text-xs">
             Assigned by: <strong className="text-foreground">{currentUser?.name}</strong> ({ROLE_DISPLAY_NAMES[myRole] || myRole})
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-3 py-2">
+        <div className="space-y-4 py-2">
           {error && <div className="rounded-lg bg-destructive/10 text-destructive text-sm px-3 py-2 border border-destructive/20">{error}</div>}
+
           <div>
-            <label className="text-xs font-medium text-muted-foreground mb-1 block">Task Title *</label>
-            <Input value={form.title} onChange={e => set("title", e.target.value)} placeholder="e.g., Complete electrical measurement analysis" />
-          </div>
-          <div>
-            <label className="text-xs font-medium text-muted-foreground mb-1 block">Description</label>
-            <textarea value={form.description} onChange={e => set("description", e.target.value)}
-              className="w-full min-h-[80px] text-sm rounded-md border bg-background px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/20 resize-none" placeholder="Task details and instructions..." />
+            <label className="text-xs font-semibold text-foreground mb-1 block">Task Title *</label>
+            <Input
+              value={form.title}
+              onChange={e => set("title", e.target.value)}
+              placeholder="e.g. Conduct thermal audit on boiler unit"
+              className="h-9 text-sm"
+              autoFocus
+            />
           </div>
 
-          {/* Assignment with Hierarchy & Self-Assign option */}
-          <div className="rounded-lg border bg-muted/20 p-3 space-y-2">
+          {/* Task Assignment Section */}
+          <div className="rounded-xl border border-primary/20 bg-primary/5 p-3.5 space-y-2.5">
             <div className="flex items-center justify-between">
-              <label className="text-xs font-semibold text-foreground flex items-center gap-1.5">
-                <User className="w-3.5 h-3.5 text-primary" /> Assign Task To *
+              <label className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                <User className="w-4 h-4 text-primary" /> Assign Task To *
               </label>
               <button
                 type="button"
                 onClick={() => set("assignedTo", currentUser?.id)}
-                className={`px-2 py-0.5 text-[11px] rounded font-medium transition-all ${
+                className={`px-2.5 py-1 text-xs rounded-md font-semibold transition-all ${
                   isSelfAssigned
-                    ? "bg-primary text-primary-foreground shadow-sm"
-                    : "bg-background border text-muted-foreground hover:text-foreground"
+                    ? "bg-primary text-primary-foreground shadow-xs"
+                    : "bg-background border border-primary/30 text-primary hover:bg-primary/10"
                 }`}
               >
-                {isSelfAssigned ? "✓ Assigned to Myself" : "Assign to Myself"}
+                {isSelfAssigned ? "✓ Self-Assigned (To Myself)" : "Assign to Myself"}
               </button>
             </div>
 
             <select
               value={form.assignedTo}
               onChange={e => set("assignedTo", e.target.value)}
-              className="w-full text-sm rounded-md border bg-background px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/20"
+              className="w-full text-sm rounded-lg border bg-background px-3 py-2.5 font-medium focus:outline-none focus:ring-2 focus:ring-primary/20"
             >
-              <option value={currentUser?.id}>Me ({currentUser?.name} — {ROLE_DISPLAY_NAMES[myRole] || myRole}) [Self-Assign]</option>
+              <option value={currentUser?.id}>
+                👤 Me ({currentUser?.name} — {ROLE_DISPLAY_NAMES[myRole] || myRole}) [Self-Assign]
+              </option>
               {eligibleAssignees
                 .filter(u => String(u.id) !== String(currentUser?.id))
                 .map(u => {
                   const uRole = (u.role || "intern").toLowerCase()
+                  const isPeer = uRole === myRole
                   return (
                     <option key={u.id} value={u.id}>
-                      {u.name} ({ROLE_DISPLAY_NAMES[uRole] || u.role}) {uRole === myRole ? "[Peer Group]" : "[Subordinate]"}
+                      {u.name} ({ROLE_DISPLAY_NAMES[uRole] || u.role}) — {isPeer ? "Peer Group" : "Direct / Lower Group"}
                     </option>
                   )
                 })}
             </select>
-            <p className="text-[10px] text-muted-foreground">
-              IITM Hierarchy Rule: As <strong>{ROLE_DISPLAY_NAMES[myRole] || myRole}</strong>, you can assign tasks to yourself, your peer group, and lower ranks.
-            </p>
+            <div className="flex items-center justify-between text-[11px] text-muted-foreground pt-0.5">
+              <span>Assigned By: <strong className="text-foreground">{currentUser?.name}</strong> ({ROLE_DISPLAY_NAMES[myRole] || myRole})</span>
+              <span className="text-[10px] text-primary/80 font-medium">Hierarchy: Admin &gt; HR &gt; Auditor &gt; Engineer &gt; Intern</span>
+            </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
-              <label className="text-xs font-medium text-muted-foreground mb-1 block">Priority</label>
-              <select value={form.priority} onChange={e => set("priority", e.target.value)}
-                className="w-full text-sm rounded-md border bg-background px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/20">
-                <option value="low">Low</option><option value="medium">Medium</option>
-                <option value="high">High</option><option value="critical">Critical</option>
+              <label className="text-xs font-semibold text-muted-foreground mb-1 block">Priority</label>
+              <select
+                value={form.priority}
+                onChange={e => set("priority", e.target.value)}
+                className="w-full text-xs rounded-md border bg-background px-2.5 py-2 focus:outline-none focus:ring-2 focus:ring-primary/20"
+              >
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+                <option value="critical">Critical</option>
               </select>
             </div>
             <div>
-              <label className="text-xs font-medium text-muted-foreground mb-1 block">Due Date</label>
-              <Input type="date" value={form.dueDate} onChange={e => set("dueDate", e.target.value)} />
+              <label className="text-xs font-semibold text-muted-foreground mb-1 block">Due Date</label>
+              <Input
+                type="date"
+                value={form.dueDate}
+                onChange={e => set("dueDate", e.target.value)}
+                className="h-8 text-xs"
+              />
             </div>
             <div>
-              <label className="text-xs font-medium text-muted-foreground mb-1 block">Est. Hours</label>
-              <Input type="number" value={form.estimatedHours} onChange={e => set("estimatedHours", e.target.value)} placeholder="hrs" />
-            </div>
-            <div>
-              <label className="text-xs font-medium text-muted-foreground mb-1 block">Project / Audit</label>
-              <Input value={form.project} onChange={e => set("project", e.target.value)} placeholder="e.g., ABC Textile Audit" />
-            </div>
-            <div>
-              <label className="text-xs font-medium text-muted-foreground mb-1 block">Category</label>
-              <Input value={form.category} onChange={e => set("category", e.target.value)} placeholder="e.g., Energy Audit" />
+              <label className="text-xs font-semibold text-muted-foreground mb-1 block">Category / Type</label>
+              <Input
+                value={form.category}
+                onChange={e => set("category", e.target.value)}
+                placeholder="e.g. Energy Audit"
+                className="h-8 text-xs"
+              />
             </div>
           </div>
         </div>
@@ -516,6 +528,7 @@ function CreateTaskModal({ onClose, onCreated, currentUser, users }) {
 }
 
 export default function TaskManagementView({ currentUser }) {
+  const role = (currentUser?.role || "intern").toLowerCase()
   const [tasks, setTasks] = useState([])
   const [users, setUsers] = useState([])
   const [loading, setLoading] = useState(true)
@@ -600,8 +613,8 @@ export default function TaskManagementView({ currentUser }) {
             <div className="flex gap-1 rounded-lg border bg-muted/30 p-1 shrink-0">
               {[
                 { id: "my", label: `My Tasks (${myTasks.length})` },
-                ...(role === "admin" || role === "manager" ? [{ id: "team", label: `Team (${teamTasks.length})` }] : []),
-                ...(role === "admin" ? [{ id: "all", label: `All (${tasks.length})` }] : [])
+                ...(teamTasks.length > 0 || role === "admin" || role === "hr" || role === "auditor" || role === "engineer" || role === "manager" ? [{ id: "team", label: `Assigned by Me (${teamTasks.length})` }] : []),
+                ...(role === "admin" || role === "hr" ? [{ id: "all", label: `All Tasks (${tasks.length})` }] : [])
               ].map(tab => (
                 <button key={tab.id} onClick={() => setActiveTab(tab.id)}
                   className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all ${activeTab === tab.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
