@@ -46,7 +46,7 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-const JWT_SECRET = process.env.JWT_SECRET || 'iitm-ieac-super-secret-key-98765';
+const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === 'production' ? crypto.randomBytes(32).toString('hex') : 'iitm-ieac-super-secret-key-98765');
 
 // Security Headers (Helmet-grade enterprise protection)
 app.use((req, res, next) => {
@@ -59,7 +59,7 @@ app.use((req, res, next) => {
   res.setHeader(
     'Content-Security-Policy',
     "default-src 'self'; " +
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
+    "script-src 'self' 'unsafe-inline'; " +
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
     "font-src 'self' https://fonts.gstatic.com data:; " +
     "img-src 'self' data: blob: https://lh3.googleusercontent.com https://*.supabase.co; " +
@@ -125,7 +125,7 @@ app.use(cors({
   credentials: true
 }));
 
-app.use(bodyParser.json({ limit: '10mb' }));
+app.use(bodyParser.json({ limit: '2mb' }));
 app.use(cookieParser());
 
 // Anti-XSS & Input Sanitization Middleware
@@ -1984,17 +1984,18 @@ async function auditLog(actorId, actorName, action, entity, entityId, details = 
   } catch (e) { console.error('audit error', e); }
 }
 
-// Helper: calculate working days between two dates excluding holidays and weekends
+// Helper: calculate working days between two dates excluding holidays and weekends (Sunday is always holiday)
 function calcWorkingDays(startDate, endDate, holidays = [], weekendDays = ['Saturday', 'Sunday']) {
   const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const holidaySet = new Set(holidays.map(h => h.date));
   let count = 0;
   let cur = new Date(startDate);
   const end = new Date(endDate);
+  const effectiveWeekendDays = weekendDays.includes('Sunday') ? weekendDays : [...weekendDays, 'Sunday'];
   while (cur <= end) {
     const dayName = days[cur.getDay()];
     const dateStr = cur.toISOString().slice(0, 10);
-    if (!weekendDays.includes(dayName) && !holidaySet.has(dateStr)) count++;
+    if (!effectiveWeekendDays.includes(dayName) && !holidaySet.has(dateStr)) count++;
     cur.setDate(cur.getDate() + 1);
   }
   return count;

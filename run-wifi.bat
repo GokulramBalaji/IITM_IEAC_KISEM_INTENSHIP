@@ -5,7 +5,7 @@ echo Starting IITM IEAC Asset Management Server...
 echo ==========================================================
 
 :: Change directory to the project folder
-cd /d "D:\inten\IITM IEAS KISEM\model 3\New assest management\Intenship_project_at_IITM_IEAC-main-backup"
+cd /d "%~dp0"
 
 :: Try to extract active local IPv4 address
 set IP=

@@ -454,18 +454,18 @@ export default function BookingView({ instruments, searchTerm, currentUserId, cu
         <CardHeader className="flex flex-col md:flex-row md:items-center justify-between pb-4 space-y-2 md:space-y-0 gap-4 border-b">
           <div className="space-y-1">
             <CardTitle className="text-lg">Checkout Controls</CardTitle>
-            <CardDescription>{selectedIds.length} instruments selected</CardDescription>
+            <CardDescription>{selectedIds.length} instruments selected — select with checkboxes then click Book or Return</CardDescription>
           </div>
-          {/* Bulk Action Buttons */}
+          {/* Action Buttons */}
           <div className="flex gap-2 flex-wrap">
             <Button variant="outline" size="sm" onClick={handleSelectAll}>
               {selectedIds.length === filteredInstruments.length ? "Deselect All" : "Select All"}
             </Button>
             <Button size="sm" onClick={openBulkBookModal} disabled={selectedIds.length === 0}>
-              Bulk Book
+              Book
             </Button>
             <Button size="sm" variant="outline" onClick={openBulkReturnModal} disabled={selectedIds.length === 0}>
-              Bulk Return
+              Return
             </Button>
           </div>
         </CardHeader>
@@ -528,34 +528,18 @@ export default function BookingView({ instruments, searchTerm, currentUserId, cu
 
                   <div className="flex items-center justify-end w-full sm:w-auto shrink-0">
                     {it.status === "available" ? (
-                      <Button size="sm" onClick={() => openBookModal(it)} className="w-full sm:w-28 cursor-pointer">
-                        Book
-                      </Button>
-                    ) : (() => {
-                      // Check if active approved booking belongs to current user (Admins can return any)
-                      const isBookedByMe = myBookings.some(b => 
-                        String(b.instrumentId) === String(it.id) && 
-                        !b.returnedDate && 
-                        b.status === "approved" && 
-                        String(b.userId) === String(currentUserId)
-                      );
-                      
-                      const canReturn = isBookedByMe || currentUserRole === "admin";
-                      
-                      if (canReturn) {
-                        return (
-                          <Button size="sm" variant="outline" onClick={() => openReturnModal(it)} className="w-full sm:w-28 cursor-pointer">
-                            Return
-                          </Button>
-                        );
-                      } else {
-                        return (
-                          <Button size="sm" disabled variant="secondary" className="w-full sm:w-28 cursor-not-allowed opacity-60">
-                            Already Booked
-                          </Button>
-                        );
-                      }
-                    })()}
+                      <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-full border border-emerald-500/20 flex items-center gap-1">
+                        <CheckCircle2 className="w-3.5 h-3.5" /> Available
+                      </span>
+                    ) : it.status === "booked" ? (
+                      <span className="text-xs font-medium text-amber-600 dark:text-amber-400 bg-amber-500/10 px-2.5 py-1 rounded-full border border-amber-500/20">
+                        Booked
+                      </span>
+                    ) : (
+                      <span className="text-xs font-medium text-muted-foreground bg-muted px-2.5 py-1 rounded-full">
+                        {it.status}
+                      </span>
+                    )}
                   </div>
                 </div>
               )
@@ -685,12 +669,35 @@ export default function BookingView({ instruments, searchTerm, currentUserId, cu
       <Dialog open={bulkBookModalOpen} onOpenChange={setBulkBookModalOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Bulk Booking</DialogTitle>
+            <DialogTitle>Book Instruments</DialogTitle>
             <DialogDescription>
-              Specify checkout dates for the selected instruments.
+              Review the selected instruments below and specify checkout dates.
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={handleBulkBookSubmit} className="space-y-4 pt-2">
+            {/* Selected Instruments Preview List */}
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold text-muted-foreground">
+                Selected Instruments ({selectedIds.filter(id => {
+                  const inst = instruments.find(i => i.id === id);
+                  return inst && inst.status === "available";
+                }).length})
+              </Label>
+              <div className="max-h-36 overflow-y-auto rounded-md border p-2 space-y-1.5 bg-muted/20">
+                {selectedIds
+                  .map(id => instruments.find(i => i.id === id))
+                  .filter(i => i && i.status === "available")
+                  .map(it => (
+                    <div key={it.id} className="text-xs flex items-center justify-between py-1.5 px-2.5 rounded bg-background border shadow-xs">
+                      <div className="min-w-0 pr-2">
+                        <span className="font-semibold text-foreground truncate block">{it.name} {it.model}</span>
+                        <span className="text-[11px] text-muted-foreground font-mono">SN: {it.serial}</span>
+                      </div>
+                      <Badge variant="success" className="text-[10px] shrink-0">Available</Badge>
+                    </div>
+                  ))}
+              </div>
+            </div>
             <div className="bg-primary/5 border border-primary/20 rounded-lg p-4 space-y-3">
               <p className="text-xs font-semibold text-primary uppercase tracking-wider">Select Booking Duration</p>
               <div className="grid grid-cols-2 gap-3">
@@ -754,12 +761,35 @@ export default function BookingView({ instruments, searchTerm, currentUserId, cu
       <Dialog open={bulkReturnModalOpen} onOpenChange={setBulkReturnModalOpen}>
         <DialogContent className="max-w-md md:max-w-lg">
           <DialogHeader>
-            <DialogTitle>Bulk Returns</DialogTitle>
+            <DialogTitle>Return Instruments</DialogTitle>
             <DialogDescription>
-              Process returns for selected instruments.
+              Review the selected instruments and process returns.
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={handleBulkReturnSubmit} className="space-y-4 pt-2">
+            {/* Selected Instruments to Return Preview */}
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold text-muted-foreground">
+                Instruments to Return ({selectedIds.filter(id => {
+                  const inst = instruments.find(i => i.id === id);
+                  return inst && inst.status === "booked";
+                }).length})
+              </Label>
+              <div className="max-h-36 overflow-y-auto rounded-md border p-2 space-y-1.5 bg-muted/20">
+                {selectedIds
+                  .map(id => instruments.find(i => i.id === id))
+                  .filter(i => i && i.status === "booked")
+                  .map(it => (
+                    <div key={it.id} className="text-xs flex items-center justify-between py-1.5 px-2.5 rounded bg-background border shadow-xs">
+                      <div className="min-w-0 pr-2">
+                        <span className="font-semibold text-foreground truncate block">{it.name} {it.model}</span>
+                        <span className="text-[11px] text-muted-foreground font-mono">SN: {it.serial}</span>
+                      </div>
+                      <Badge variant="warning" className="text-[10px] shrink-0">Booked</Badge>
+                    </div>
+                  ))}
+              </div>
+            </div>
             <div className="space-y-1.5">
               <Label htmlFor="bulkReturnRemarks">Common Return Remarks (applied to all)</Label>
               <Textarea 

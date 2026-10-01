@@ -38,8 +38,19 @@ function ApplyLeaveModal({ onClose, onApplied }) {
 
   useEffect(() => {
     if (form.fromDate && form.toDate && form.toDate >= form.fromDate) {
-      const diff = Math.ceil((new Date(form.toDate) - new Date(form.fromDate)) / (1000 * 86400)) + 1
-      setWorkingDays(form.isHalfDay ? 0.5 : diff)
+      if (form.isHalfDay) {
+        setWorkingDays(0.5)
+      } else {
+        // Count working days, excluding Sundays (day 0)
+        let count = 0
+        const cur = new Date(form.fromDate)
+        const end = new Date(form.toDate)
+        while (cur <= end) {
+          if (cur.getDay() !== 0) count++ // Skip Sunday
+          cur.setDate(cur.getDate() + 1)
+        }
+        setWorkingDays(Math.max(count, 0))
+      }
     } else {
       setWorkingDays(0)
     }
